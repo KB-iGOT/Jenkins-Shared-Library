@@ -1,0 +1,1 @@
+def call(Map c=[:]){pipeline{agent any;stages{stage('PR'){steps{echo 'central'}}}}}
