@@ -10,13 +10,6 @@ def call(Map config = [:]) {
 
         stages {
 
-            stage('Checkout Source') {
-                steps {
-                    echo "📥 Checking out PR source"
-                    checkout scm
-                }
-            }
-
             stage('Detect Project Type') {
                 steps {
                     script {
