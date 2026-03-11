@@ -58,8 +58,8 @@ def call(Map config = [:]) {
                                 docker run --rm -v "${PWD}:/usr/src" node:22 sh -c "cd /usr/src && yarn && npm run test-coverage" || \
                                 docker run \
                                 --rm \
-                                -e SONAR_HOST_URL="http://10.175.2.49:9000/codeanalysis" \
-                                -e SONAR_LOGIN=$sonar_token \
+                                -e SONAR_HOST_URL="${sonar_host}" \
+                                -e SONAR_LOGIN=${sonar_token} \
                                 -v "${PWD}:/usr/src" \
                                 sonarsource/sonar-scanner-cli \
                                   -Dsonar.projectKey=${repoName} \
