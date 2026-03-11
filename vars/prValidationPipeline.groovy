@@ -55,12 +55,22 @@ def call(Map config = [:]) {
                             } else {
 
                                 sh """
-                                sonar-scanner \
+                                docker run --rm -v "${PWD}:/usr/src" node:22 sh -c "cd /usr/src && yarn && npm run test-coverage" || \
+                                docker run \
+                                --rm \
+                                -e SONAR_HOST_URL="http://10.175.2.49:9000/codeanalysis" \
+                                -e SONAR_LOGIN=$sonar_token \
+                                -v "${PWD}:/usr/src" \
+                                sonarsource/sonar-scanner-cli \
                                   -Dsonar.projectKey=${repoName} \
                                   -Dsonar.sources=. \
                                   -Dsonar.pullrequest.key=${CHANGE_ID} \
                                   -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
-                                  -Dsonar.pullrequest.base=${CHANGE_TARGET}
+                                  -Dsonar.pullrequest.base=${CHANGE_TARGET} \
+                                  -Dsonar.exclusions=**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js \
+                                  -Dsonar.tests=src \
+                                  -Dsonar.test.inclusions="**/*.spec.ts" \
+                                  -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info
                                 """
 
                             }
