@@ -52,7 +52,7 @@ def call(Map config = [:]) {
                                   -Dsonar.pullrequest.base=${CHANGE_TARGET}
                                 """
 
-                            } else if (env.PROJECT_TYPE == "node")
+                            } else if (env.PROJECT_TYPE == "node") {
 
                                 sh """
                                 docker run --rm -v "${PWD}:/usr/src" node:22 sh -c "cd /usr/src && yarn && npm run test-coverage" || \
