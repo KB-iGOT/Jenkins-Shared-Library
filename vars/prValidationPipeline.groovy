@@ -45,11 +45,14 @@ def call(Map config = [:]) {
                             if (env.PROJECT_TYPE == "java") {
 
                                 sh """
-                                mvn clean verify sonar:sonar \
+                                export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12 && /var/lib/jenkins/apache-maven-3.8.8/bin/mvn clean verify sonar:sonar \
+                                  -Dsonar.host.url="${SONAR_HOST_URL}" \
+                                  -Dsonar.login=${SONAR_AUTH_TOKEN} \
                                   -Dsonar.projectKey=${repoName} \
                                   -Dsonar.pullrequest.key=${CHANGE_ID} \
                                   -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
-                                  -Dsonar.pullrequest.base=${CHANGE_TARGET}
+                                  -Dsonar.pullrequest.base=${CHANGE_TARGET} \
+                                  -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml      
                                 """
 
                             } else if (env.PROJECT_TYPE == "node") {
@@ -58,8 +61,8 @@ def call(Map config = [:]) {
                                 docker run --rm -v "${PWD}:/usr/src" node:22 sh -c "cd /usr/src && yarn && npm run test-coverage" || \
                                 docker run \
                                   --rm \
-                                  -e SONAR_HOST_URL="${sonar_host}" \
-                                  -e SONAR_LOGIN=${sonar_token} \
+                                  -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
+                                  -e SONAR_LOGIN=${SONAR_AUTH_TOKEN} \
                                   -v "${PWD}:/usr/src" \
                                   sonarsource/sonar-scanner-cli \
                                     -Dsonar.projectKey=${repoName} \
@@ -80,8 +83,8 @@ def call(Map config = [:]) {
                               echo "⚠️ Running generic Sonar scan"
                               sh """
                               docker run --rm \
-                                -e SONAR_HOST_URL=${sonar_host} \
-                                -e SONAR_LOGIN=${sonar_token} \
+                                -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
+                                -e SONAR_LOGIN=${SONAR_AUTH_TOKEN} \
                                 -v "\$(pwd):/usr/src" \
                                 sonarsource/sonar-scanner-cli \
                                   -Dsonar.projectKey=${repoName} \
