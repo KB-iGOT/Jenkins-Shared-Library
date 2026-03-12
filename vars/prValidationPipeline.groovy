@@ -36,7 +36,7 @@ def call(Map config = [:]) {
                 steps {
                     script {
 
-                        def repoName = env.JOB_NAME.tokenize('/')[1]
+                        def repoName = env.GIT_URL.tokenize('/').last().replace('.git','')
 
                         echo "🔎 Running SonarQube PR analysis for repo: ${repoName}"
 
@@ -52,28 +52,45 @@ def call(Map config = [:]) {
                                   -Dsonar.pullrequest.base=${CHANGE_TARGET}
                                 """
 
-                            } else {
+                            } else if (env.PROJECT_TYPE == "node")
 
                                 sh """
                                 docker run --rm -v "${PWD}:/usr/src" node:22 sh -c "cd /usr/src && yarn && npm run test-coverage" || \
                                 docker run \
-                                --rm \
-                                -e SONAR_HOST_URL="${sonar_host}" \
+                                  --rm \
+                                  -e SONAR_HOST_URL="${sonar_host}" \
+                                  -e SONAR_LOGIN=${sonar_token} \
+                                  -v "${PWD}:/usr/src" \
+                                  sonarsource/sonar-scanner-cli \
+                                    -Dsonar.projectKey=${repoName} \
+                                    -Dsonar.sources=. \
+                                    -Dsonar.pullrequest.key=${CHANGE_ID} \
+                                    -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
+                                    -Dsonar.pullrequest.base=${CHANGE_TARGET} \
+                                    -Dsonar.exclusions=**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js \
+                                    -Dsonar.tests=src \
+                                    -Dsonar.test.inclusions="**/*.spec.ts" \
+                                    -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info
+                                """
+
+                            }
+
+                            else {
+
+                              echo "⚠️ Running generic Sonar scan"
+                              sh """
+                              docker run --rm \
+                                -e SONAR_HOST_URL=${sonar_host} \
                                 -e SONAR_LOGIN=${sonar_token} \
-                                -v "${PWD}:/usr/src" \
+                                -v "\$(pwd):/usr/src" \
                                 sonarsource/sonar-scanner-cli \
                                   -Dsonar.projectKey=${repoName} \
                                   -Dsonar.sources=. \
                                   -Dsonar.pullrequest.key=${CHANGE_ID} \
                                   -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
-                                  -Dsonar.pullrequest.base=${CHANGE_TARGET} \
-                                  -Dsonar.exclusions=**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js \
-                                  -Dsonar.tests=src \
-                                  -Dsonar.test.inclusions="**/*.spec.ts" \
-                                  -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info
-                                """
-
-                            }
+                                  -Dsonar.pullrequest.base=${CHANGE_TARGET}
+                              """
+                            }                        
                         }
                     }
                 }
