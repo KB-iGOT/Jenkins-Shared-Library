@@ -47,7 +47,7 @@ def call(Map config = [:]) {
                                 sh """
                                 export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12 && /var/lib/jenkins/apache-maven-3.8.8/bin/mvn clean verify sonar:sonar \
                                   -Dsonar.host.url="${SONAR_HOST_URL}" \
-                                  -Dsonar.login=${SONAR_AUTH_TOKEN} \
+                                  -Dsonar.token=${SONAR_AUTH_TOKEN} \
                                   -Dsonar.projectKey=${repoName} \
                                   -Dsonar.pullrequest.key=${CHANGE_ID} \
                                   -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
@@ -62,7 +62,7 @@ def call(Map config = [:]) {
                                 docker run \
                                   --rm \
                                   -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
-                                  -e SONAR_LOGIN=${SONAR_AUTH_TOKEN} \
+                                  -e SONAR_TOKEN=${SONAR_AUTH_TOKEN} \
                                   -v "${PWD}:/usr/src" \
                                   sonarsource/sonar-scanner-cli \
                                     -Dsonar.projectKey=${repoName} \
@@ -84,7 +84,7 @@ def call(Map config = [:]) {
                               sh """
                               docker run --rm \
                                 -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
-                                -e SONAR_LOGIN=${SONAR_AUTH_TOKEN} \
+                                -e SONAR_TOKEN=${SONAR_AUTH_TOKEN} \
                                 -v "\$(pwd):/usr/src" \
                                 sonarsource/sonar-scanner-cli \
                                   -Dsonar.projectKey=${repoName} \
