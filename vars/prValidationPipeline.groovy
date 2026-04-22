@@ -49,9 +49,7 @@ def call(Map config = [:]) {
                                   -Dsonar.host.url="${SONAR_HOST_URL}" \
                                   -Dsonar.token=${SONAR_AUTH_TOKEN} \
                                   -Dsonar.projectKey=${repoName} \
-                                  -Dsonar.pullrequest.key=${CHANGE_ID} \
-                                  -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
-                                  -Dsonar.pullrequest.base=${CHANGE_TARGET} \
+                                  -Dsonar.pullrequest.name=${CHANGE_ID} \
                                   -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml      
                                 """
 
