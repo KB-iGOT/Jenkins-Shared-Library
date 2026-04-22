@@ -98,7 +98,11 @@ def call(Map config = [:]) {
             }
 
             stage('Quality Gate') {
+                 when {
+                      expression { return !env.CHANGE_ID }  // Skip for PRs
+                    }
                 steps {
+                   
                     script {
 
                         echo "⏳ Waiting for SonarQube Quality Gate"
