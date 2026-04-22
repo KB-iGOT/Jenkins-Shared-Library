@@ -158,6 +158,7 @@ def call(Map config = [:]) {
             success {
 
                 script {
+                    githubNotify context: 'continuous-integration/jenkins/pr-head', status: 'SUCCESS'
                     echo "✅ PR Validation Successful"
                     echo "Manager can now review and merge the PR."
                 }
@@ -167,6 +168,7 @@ def call(Map config = [:]) {
             failure {
 
                 script {
+                    githubNotify context: 'continuous-integration/jenkins/pr-head', status: 'FAILURE'
                     echo "❌ PR Validation Failed"
                     echo "Merge will be blocked by GitHub Branch Protection."
                 }
