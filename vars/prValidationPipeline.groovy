@@ -36,7 +36,14 @@ def call(Map config = [:]) {
                 steps {
                     script {
 
+                        env.IS_PR_BUILD = env.CHANGE_ID ? "true" : "false"
+
                         def repoName = env.GIT_URL.tokenize('/').last().replace('.git','')
+
+                        if (!env.CHANGE_ID) {
+                            echo "Not a Pull Request build. Skipping Sonar PR validation."
+                            return
+                        }
 
                         echo "🔎 Running SonarQube PR analysis for repo: ${repoName}"
 
@@ -49,9 +56,9 @@ def call(Map config = [:]) {
                                   -Dsonar.host.url="${SONAR_HOST_URL}" \
                                   -Dsonar.token=${SONAR_AUTH_TOKEN} \
                                   -Dsonar.projectKey=${repoName} \
-                                  -Dsonar.pullrequest.key=${CHANGE_ID} \
-                                  -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
-                                  -Dsonar.pullrequest.base=${CHANGE_TARGET} \
+                                  -Dsonar.pullrequest.key=${env.CHANGE_ID} \
+                                  -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH} \
+                                  -Dsonar.pullrequest.base=${env.CHANGE_TARGET} \
                                   -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml      
                                 """
 
@@ -67,9 +74,9 @@ def call(Map config = [:]) {
                                   sonarsource/sonar-scanner-cli \
                                     -Dsonar.projectKey=${repoName} \
                                     -Dsonar.sources=. \
-                                    -Dsonar.pullrequest.key=${CHANGE_ID} \
-                                    -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
-                                    -Dsonar.pullrequest.base=${CHANGE_TARGET} \
+                                    -Dsonar.pullrequest.key=${env.CHANGE_ID} \
+                                    -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH} \
+                                    -Dsonar.pullrequest.base=${env.CHANGE_TARGET} \
                                     -Dsonar.exclusions=**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js \
                                     -Dsonar.tests=src \
                                     -Dsonar.test.inclusions="**/*.spec.ts" \
@@ -89,9 +96,9 @@ def call(Map config = [:]) {
                                 sonarsource/sonar-scanner-cli \
                                   -Dsonar.projectKey=${repoName} \
                                   -Dsonar.sources=. \
-                                  -Dsonar.pullrequest.key=${CHANGE_ID} \
-                                  -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
-                                  -Dsonar.pullrequest.base=${CHANGE_TARGET}
+                                  -Dsonar.pullrequest.key=${env.CHANGE_ID} \
+                                  -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH} \
+                                  -Dsonar.pullrequest.base=${env.CHANGE_TARGET}
                               """
                             }                        
                         }
@@ -104,6 +111,11 @@ def call(Map config = [:]) {
                 steps {
                    
                     script {
+
+                        if (env.IS_PR_BUILD != "true") {
+                            echo "Skipping Quality Gate for non-PR build."
+                            return
+                        }
 
                         echo "⏳ Waiting for SonarQube Quality Gate"
 
