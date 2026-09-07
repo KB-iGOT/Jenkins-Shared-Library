@@ -50,6 +50,8 @@ def call(Map config = [:]) {
                                   -Dsonar.token=${SONAR_AUTH_TOKEN} \
                                   -Dsonar.projectKey=${repoName} \
                                   -Dsonar.pullrequest.name=${CHANGE_ID} \
+                                  -Dsonar.pullrequest.branch=${CHANGE_BRANCH} \
+                                  -Dsonar.pullrequest.base=${CHANGE_TARGET} \
                                   -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml      
                                 """
 
@@ -98,9 +100,7 @@ def call(Map config = [:]) {
             }
 
             stage('Quality Gate') {
-                 when {
-                      expression { return !env.CHANGE_ID }  // Skip for PRs
-                    }
+                 
                 steps {
                    
                     script {
