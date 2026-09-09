@@ -127,15 +127,6 @@ pipeline {
                         }
                         else if (env.PROJECT_TYPE == "python") {
 
-                            echo "Testing workspace permissions"
-                            
-                            sh """
-                                docker run --rm \
-                                -v "\$(pwd):/usr/src" \
-                                sonarsource/sonar-scanner-cli \
-                                sh -c 'id && ls -ld /usr/src && touch /usr/src/testfile'
-                            """
-
                             echo "Running Python SonarQube analysis"
 
                             sh """
