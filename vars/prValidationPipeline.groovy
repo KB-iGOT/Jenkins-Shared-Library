@@ -32,7 +32,7 @@ pipeline {
                         env.PROJECT_TYPE = "unknown"
                     }
 
-                    echo "📦 Detected Project Type: ${env.PROJECT_TYPE}"
+                    echo "Detected Project Type: ${env.PROJECT_TYPE}"
                 }
             }
         }
@@ -53,17 +53,17 @@ pipeline {
                         .last()
                         .replace('.git', '')
 
-                    echo "🔎 Running SonarQube PR analysis"
-                    echo "📦 Repository: ${repoName}"
-                    echo "📌 PR Number: ${env.CHANGE_ID}"
-                    echo "🌿 Source Branch: ${env.CHANGE_BRANCH}"
-                    echo "🎯 Target Branch: ${env.CHANGE_TARGET}"
+                    echo "Running SonarQube PR analysis"
+                    echo "Repository: ${repoName}"
+                    echo "PR Number: ${env.CHANGE_ID}"
+                    echo "Source Branch: ${env.CHANGE_BRANCH}"
+                    echo "Target Branch: ${env.CHANGE_TARGET}"
 
                     withSonarQubeEnv("${SONARQUBE_ENV}") {
 
                         if (env.PROJECT_TYPE == "java") {
 
-                            echo "☕ Running Java/Maven SonarQube analysis"
+                            echo "Running Java/Maven SonarQube analysis"
 
                             sh """
                                 export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
@@ -83,7 +83,7 @@ pipeline {
                         }
                         else if (env.PROJECT_TYPE == "node") {
 
-                            echo "🟢 Running Node.js tests and coverage"
+                            echo "Running Node.js tests and coverage"
 
                             sh """
                                 docker run --rm \
@@ -92,7 +92,7 @@ pipeline {
                                   sh -c "cd /usr/src && yarn && npm run test-coverage"
                             """
 
-                            echo "🔎 Running Node.js SonarQube analysis"
+                            echo "Running Node.js SonarQube analysis"
 
                             sh """
                                 docker run --rm \
@@ -115,7 +115,7 @@ pipeline {
                         }
                         else if (env.PROJECT_TYPE == "python") {
 
-                            echo "🐍 Running Python SonarQube analysis"
+                            echo "Running Python SonarQube analysis"
 
                             sh """
                                 docker run --rm \
@@ -135,7 +135,7 @@ pipeline {
                         }
                         else {
 
-                            echo "⚠️ Running generic SonarQube scan"
+                            echo "Running generic SonarQube scan"
 
                             sh """
                                 docker run --rm \
@@ -152,7 +152,7 @@ pipeline {
                             """
                         }
 
-                        echo "🔍 Checking SonarQube task report"
+                        echo "Checking SonarQube task report"
 
                         sh '''
                             echo "=========================================="
@@ -160,22 +160,22 @@ pipeline {
                             echo "=========================================="
 
                             if [ -f ".scannerwork/report-task.txt" ]; then
-                                echo "✅ Found .scannerwork/report-task.txt"
-                                echo ""
+                                echo "Found .scannerwork/report-task.txt"
                                 cat .scannerwork/report-task.txt
                             else
-                                echo "❌ .scannerwork/report-task.txt NOT FOUND"
+                                echo "ERROR: .scannerwork/report-task.txt NOT FOUND"
                                 echo ""
-                                echo "Searching workspace for report-task.txt..."
+                                echo "Searching workspace..."
                                 find . -name "report-task.txt" -print || true
                                 echo ""
-                                echo "Checking Sonar directories..."
+                                echo "Checking .scannerwork..."
                                 ls -la .scannerwork 2>/dev/null || true
+                                echo ""
+                                echo "Checking .sonar..."
                                 ls -la .sonar 2>/dev/null || true
                                 exit 1
                             fi
 
-                            echo ""
                             echo "=========================================="
                         '''
                     }
@@ -192,7 +192,7 @@ pipeline {
                         return
                     }
 
-                    echo "⏳ Waiting for SonarQube Quality Gate"
+                    echo "Waiting for SonarQube Quality Gate"
 
                     timeout(time: 10, unit: 'MINUTES') {
 
@@ -200,13 +200,13 @@ pipeline {
                             abortPipeline: false
                         )
 
-                        echo "🔎 Quality Gate Status: ${qg.status}"
+                        echo "Quality Gate Status: ${qg.status}"
 
                         if (qg.status != 'OK') {
-                            error("❌ SonarQube Quality Gate Failed: ${qg.status}")
+                            error("SonarQube Quality Gate Failed: ${qg.status}")
                         }
 
-                        echo "✅ SonarQube Quality Gate Passed"
+                        echo "SonarQube Quality Gate Passed"
                     }
                 }
             }
@@ -227,14 +227,14 @@ pipeline {
 
                         env.JIRA_ID = matcher.group(1)
 
-                        echo "🎫 Jira Ticket Found: ${env.JIRA_ID}"
+                        echo "Jira Ticket Found: ${env.JIRA_ID}"
 
                     }
                     else {
 
                         env.JIRA_ID = ""
 
-                        echo "ℹ No Jira Ticket Found in commit message"
+                        echo "No Jira Ticket Found in commit message"
                     }
                 }
             }
@@ -245,20 +245,20 @@ pipeline {
 
         success {
             script {
-                echo "✅ PR Validation Successful"
+                echo "PR Validation Successful"
                 echo "Manager can now review and merge the PR."
             }
         }
 
         failure {
             script {
-                echo "❌ PR Validation Failed"
+                echo "PR Validation Failed"
                 echo "Merge will be blocked by GitHub Branch Protection."
             }
         }
 
         always {
-            echo "🏁 PR Validation Pipeline Completed"
+            echo "PR Validation Pipeline Completed"
         }
     }
 }
