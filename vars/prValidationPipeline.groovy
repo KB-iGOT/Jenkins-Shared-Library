@@ -141,7 +141,7 @@ pipeline {
                                   -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
                                   -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
                                   -Dsonar.exclusions="**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc" \
-                                  -Dsonar.working.directory=/usr/src/.scannerwork
+                                  -Dsonar.working.directory=.scannerwork
                             """
 
                         }
