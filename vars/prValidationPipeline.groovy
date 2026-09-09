@@ -113,6 +113,26 @@ pipeline {
                             """
 
                         }
+                        else if (env.PROJECT_TYPE == "python") {
+
+                            echo "🐍 Running Python SonarQube analysis"
+
+                            sh """
+                                docker run --rm \
+                                  -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
+                                  -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
+                                  -v "\$(pwd):/usr/src" \
+                                  sonarsource/sonar-scanner-cli \
+                                  -Dsonar.projectKey="${repoName}" \
+                                  -Dsonar.sources=. \
+                                  -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
+                                  -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
+                                  -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
+                                  -Dsonar.exclusions="**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc" \
+                                  -Dsonar.working.directory=/usr/src/.scannerwork
+                            """
+
+                        }
                         else {
 
                             echo "⚠️ Running generic SonarQube scan"
@@ -201,7 +221,7 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    def matcher = (commitMsg =~ /(KB-\\d+)/)
+                    def matcher = (commitMsg =~ /(KB-\d+)/)
 
                     if (matcher.find()) {
 
