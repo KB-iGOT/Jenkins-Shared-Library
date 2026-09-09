@@ -85,11 +85,6 @@ pipeline {
 
                             echo "🟢 Running Node.js tests and coverage"
 
-                            /*
-                             * Run tests first.
-                             * SonarQube scan must run independently after
-                             * successful test execution.
-                             */
                             sh """
                                 docker run --rm \
                                   -v "\$(pwd):/usr/src" \
@@ -137,10 +132,6 @@ pipeline {
                             """
                         }
 
-                        /*
-                         * Validate that the SonarScanner created
-                         * the task report in the Jenkins workspace.
-                         */
                         echo "🔍 Checking SonarQube task report"
 
                         sh '''
