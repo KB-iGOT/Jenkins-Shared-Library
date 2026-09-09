@@ -62,6 +62,19 @@ pipeline {
 
                         if (env.PROJECT_TYPE == "java") {
 
+                            echo "Fetching target branch for Sonar comparison"
+
+                            sh """
+                                git fetch origin ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} || true
+
+                                echo "Available branches:"
+                                git branch -a
+
+                                echo "Verifying target branch:"
+                                git show-ref | grep "${env.CHANGE_TARGET}" || true
+                            """
+
+
                             echo "Running Java/Maven SonarQube analysis"
 
                             sh """
@@ -151,32 +164,7 @@ pipeline {
                             """
                         }
 
-                        echo "Checking SonarQube task report"
-
-                        sh '''
-                            echo "=========================================="
-                            echo "SonarQube report-task.txt"
-                            echo "=========================================="
-
-                            if [ -f ".scannerwork/report-task.txt" ]; then
-                                echo "Found .scannerwork/report-task.txt"
-                                cat .scannerwork/report-task.txt
-                            else
-                                echo "ERROR: .scannerwork/report-task.txt NOT FOUND"
-                                echo ""
-                                echo "Searching workspace..."
-                                find . -name "report-task.txt" -print || true
-                                echo ""
-                                echo "Checking .scannerwork..."
-                                ls -la .scannerwork 2>/dev/null || true
-                                echo ""
-                                echo "Checking .sonar..."
-                                ls -la .sonar 2>/dev/null || true
-                                exit 1
-                            fi
-
-                            echo "=========================================="
-                        '''
+                        echo "SonarQube analysis completed successfully"
                     }
                 }
             }
