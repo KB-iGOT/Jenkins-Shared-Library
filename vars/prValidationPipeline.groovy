@@ -127,6 +127,10 @@ pipeline {
                         }
                         else if (env.PROJECT_TYPE == "python") {
 
+                            sh """
+                                git fetch origin ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} || true
+                            """
+
                             echo "Running Python SonarQube analysis"
 
                             sh """
@@ -143,7 +147,14 @@ pipeline {
                                   -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
                                   -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
                                   -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
+                                  -Dsonar.scanner.metadataFile=/usr/src/report-task.txt \
                                   -Dsonar.exclusions="**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc" \
+                            """
+
+                            sh """
+                                echo "Checking report-task.txt"
+                                ls -ltr report-task.txt || true
+                                cat report-task.txt || true
                             """
 
                         }
