@@ -1,196 +1,256 @@
 def call(Map config = [:]) {
 
-    pipeline {
+```
+pipeline {
 
-        agent any
+    agent any
 
-        environment {
-            SONARQUBE_ENV = "sonarqube"
+    environment {
+        SONARQUBE_ENV = "sonarqube"
+    }
+
+    stages {
+
+        stage('Detect Project Type') {
+            steps {
+                script {
+
+                    if (fileExists("pom.xml")) {
+                        env.PROJECT_TYPE = "java"
+                    }
+                    else if (fileExists("package.json")) {
+                        env.PROJECT_TYPE = "node"
+                    }
+                    else if (
+                        fileExists("requirements.txt") ||
+                        fileExists("pyproject.toml") ||
+                        fileExists("setup.py")
+                    ) {
+                        env.PROJECT_TYPE = "python"
+                    }
+                    else {
+                        env.PROJECT_TYPE = "unknown"
+                    }
+
+                    echo "📦 Detected Project Type: ${env.PROJECT_TYPE}"
+                }
+            }
         }
 
-        stages {
+        stage('SonarQube Analysis') {
+            steps {
+                script {
 
-            stage('Detect Project Type') {
-                steps {
-                    script {
+                    env.IS_PR_BUILD = env.CHANGE_ID ? "true" : "false"
 
-                        if (fileExists("pom.xml")) {
-                            env.PROJECT_TYPE = "java"
+                    if (!env.CHANGE_ID) {
+                        echo "Not a Pull Request build. Skipping Sonar PR validation."
+                        return
+                    }
+
+                    def repoName = env.GIT_URL
+                        .tokenize('/')
+                        .last()
+                        .replace('.git', '')
+
+                    echo "🔎 Running SonarQube PR analysis"
+                    echo "📦 Repository: ${repoName}"
+                    echo "📌 PR Number: ${env.CHANGE_ID}"
+                    echo "🌿 Source Branch: ${env.CHANGE_BRANCH}"
+                    echo "🎯 Target Branch: ${env.CHANGE_TARGET}"
+
+                    withSonarQubeEnv("${SONARQUBE_ENV}") {
+
+                        if (env.PROJECT_TYPE == "java") {
+
+                            echo "☕ Running Java/Maven SonarQube analysis"
+
+                            sh """
+                                export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
+                                export PATH="\$JAVA_HOME/bin:\$PATH"
+
+                                /var/lib/jenkins/apache-maven-3.8.8/bin/mvn \
+                                  clean verify sonar:sonar \
+                                  -Dsonar.host.url="${SONAR_HOST_URL}" \
+                                  -Dsonar.token="${SONAR_AUTH_TOKEN}" \
+                                  -Dsonar.projectKey="${repoName}" \
+                                  -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
+                                  -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
+                                  -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
+                                  -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+                            """
+
                         }
-                        else if (fileExists("package.json")) {
-                            env.PROJECT_TYPE = "node"
-                        }
-                        else if (fileExists("requirements.txt") || fileExists("pyproject.toml") || fileExists("setup.py")) {
-                            env.PROJECT_TYPE = "python"
+                        else if (env.PROJECT_TYPE == "node") {
+
+                            echo "🟢 Running Node.js tests and coverage"
+
+                            /*
+                             * Run tests first.
+                             * SonarQube scan must run independently after
+                             * successful test execution.
+                             */
+                            sh """
+                                docker run --rm \
+                                  -v "\$(pwd):/usr/src" \
+                                  node:22 \
+                                  sh -c "cd /usr/src && yarn && npm run test-coverage"
+                            """
+
+                            echo "🔎 Running Node.js SonarQube analysis"
+
+                            sh """
+                                docker run --rm \
+                                  -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
+                                  -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
+                                  -v "\$(pwd):/usr/src" \
+                                  sonarsource/sonar-scanner-cli \
+                                  -Dsonar.projectKey="${repoName}" \
+                                  -Dsonar.sources=. \
+                                  -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
+                                  -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
+                                  -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
+                                  -Dsonar.exclusions="**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js" \
+                                  -Dsonar.tests=src \
+                                  -Dsonar.test.inclusions="**/*.spec.ts" \
+                                  -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
+                                  -Dsonar.working.directory=/usr/src/.scannerwork
+                            """
+
                         }
                         else {
-                            env.PROJECT_TYPE = "unknown"
-                        }
 
-                        echo "📦 Detected Project Type: ${env.PROJECT_TYPE}"
-                    }
-                }
-            }
+                            echo "⚠️ Running generic SonarQube scan"
 
-            stage('SonarQube Analysis') {
-                steps {
-                    script {
-
-                        env.IS_PR_BUILD = env.CHANGE_ID ? "true" : "false"
-
-                        def repoName = env.GIT_URL.tokenize('/').last().replace('.git','')
-
-                        if (!env.CHANGE_ID) {
-                            echo "Not a Pull Request build. Skipping Sonar PR validation."
-                            return
-                        }
-
-                        echo "🔎 Running SonarQube PR analysis for repo: ${repoName}"
-
-                        withSonarQubeEnv("${SONARQUBE_ENV}") {
-
-                            if (env.PROJECT_TYPE == "java") {
-
-                                sh """
-                                export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12 && /var/lib/jenkins/apache-maven-3.8.8/bin/mvn clean verify sonar:sonar \
-                                  -Dsonar.host.url="${SONAR_HOST_URL}" \
-                                  -Dsonar.token=${SONAR_AUTH_TOKEN} \
-                                  -Dsonar.projectKey=${repoName} \
-                                  -Dsonar.pullrequest.key=${env.CHANGE_ID} \
-                                  -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH} \
-                                  -Dsonar.pullrequest.base=${env.CHANGE_TARGET} \
-                                  -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml      
-                                """
-
-                            } else if (env.PROJECT_TYPE == "node") {
-
-                                sh """
-                                docker run --rm -v "${PWD}:/usr/src" node:22 sh -c "cd /usr/src && yarn && npm run test-coverage" || \
-                                docker run \
-                                  --rm \
+                            sh """
+                                docker run --rm \
                                   -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
-                                  -e SONAR_TOKEN=${SONAR_AUTH_TOKEN} \
-                                  -v "${PWD}:/usr/src" \
+                                  -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
+                                  -v "\$(pwd):/usr/src" \
                                   sonarsource/sonar-scanner-cli \
-                                    -Dsonar.projectKey=${repoName} \
-                                    -Dsonar.sources=. \
-                                    -Dsonar.pullrequest.key=${env.CHANGE_ID} \
-                                    -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH} \
-                                    -Dsonar.pullrequest.base=${env.CHANGE_TARGET} \
-                                    -Dsonar.exclusions=**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js \
-                                    -Dsonar.tests=src \
-                                    -Dsonar.test.inclusions="**/*.spec.ts" \
-                                    -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info
-                                """
-
-                            }
-
-                            else {
-
-                              echo "⚠️ Running generic Sonar scan"
-                              sh """
-                              docker run --rm \
-                                -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
-                                -e SONAR_TOKEN=${SONAR_AUTH_TOKEN} \
-                                -v "\$(pwd):/usr/src" \
-                                sonarsource/sonar-scanner-cli \
-                                  -Dsonar.projectKey=${repoName} \
+                                  -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=. \
-                                  -Dsonar.pullrequest.key=${env.CHANGE_ID} \
-                                  -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH} \
-                                  -Dsonar.pullrequest.base=${env.CHANGE_TARGET}
-                              """
-                            }                        
+                                  -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
+                                  -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
+                                  -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
+                                  -Dsonar.working.directory=/usr/src/.scannerwork
+                            """
                         }
+
+                        /*
+                         * Validate that the SonarScanner created
+                         * the task report in the Jenkins workspace.
+                         */
+                        echo "🔍 Checking SonarQube task report"
+
+                        sh '''
+                            echo "=========================================="
+                            echo "SonarQube report-task.txt"
+                            echo "=========================================="
+
+                            if [ -f ".scannerwork/report-task.txt" ]; then
+                                echo "✅ Found .scannerwork/report-task.txt"
+                                echo ""
+                                cat .scannerwork/report-task.txt
+                            else
+                                echo "❌ .scannerwork/report-task.txt NOT FOUND"
+                                echo ""
+                                echo "Searching workspace for report-task.txt..."
+                                find . -name "report-task.txt" -print || true
+                                echo ""
+                                echo "Checking Sonar directories..."
+                                ls -la .scannerwork 2>/dev/null || true
+                                ls -la .sonar 2>/dev/null || true
+                                exit 1
+                            fi
+
+                            echo ""
+                            echo "=========================================="
+                        '''
                     }
                 }
             }
-
-            stage('Quality Gate') {
-                 
-                steps {
-                   
-                    script {
-
-                        if (env.IS_PR_BUILD != "true") {
-                            echo "Skipping Quality Gate for non-PR build."
-                            return
-                        }
-
-                        echo "⏳ Waiting for SonarQube Quality Gate"
-
-                        timeout(time: 10, unit: 'MINUTES') {
-
-                            def qg = waitForQualityGate()
-
-                            echo "🔎 Quality Gate Status: ${qg.status}"
-
-                            if (qg.status != 'OK') {
-                                error("❌ Quality Gate Failed")
-                            }
-
-                        }
-                    }
-                }
-            }
-
-            stage('Extract Jira Ticket') {
-                steps {
-                    script {
-
-                        def commitMsg = sh(
-                            script: "git log -1 --pretty=%B",
-                            returnStdout: true
-                        ).trim()
-
-                        def matcher = (commitMsg =~ /(KB-\\d+)/)
-
-                        if (matcher.find()) {
-
-                            env.JIRA_ID = matcher.group(1)
-
-                            echo "🎫 Jira Ticket Found: ${env.JIRA_ID}"
-
-                        } else {
-
-                            env.JIRA_ID = ""
-
-                            echo "ℹ No Jira Ticket Found in commit message"
-
-                        }
-
-                    }
-                }
-            }
-
         }
 
-        post {
-
-            success {
-
+        stage('Quality Gate') {
+            steps {
                 script {
-                    echo "✅ PR Validation Successful"
-                    echo "Manager can now review and merge the PR."
+
+                    if (env.IS_PR_BUILD != "true") {
+                        echo "Skipping Quality Gate for non-PR build."
+                        return
+                    }
+
+                    echo "⏳ Waiting for SonarQube Quality Gate"
+
+                    timeout(time: 10, unit: 'MINUTES') {
+
+                        def qg = waitForQualityGate(
+                            abortPipeline: false
+                        )
+
+                        echo "🔎 Quality Gate Status: ${qg.status}"
+
+                        if (qg.status != 'OK') {
+                            error("❌ SonarQube Quality Gate Failed: ${qg.status}")
+                        }
+
+                        echo "✅ SonarQube Quality Gate Passed"
+                    }
                 }
-
             }
-
-            failure {
-
-                script {
-                    echo "❌ PR Validation Failed"
-                    echo "Merge will be blocked by GitHub Branch Protection."
-                }
-
-            }
-
-            always {
-                echo "🏁 PR Validation Pipeline Completed"
-            }
-
         }
 
+        stage('Extract Jira Ticket') {
+            steps {
+                script {
+
+                    def commitMsg = sh(
+                        script: "git log -1 --pretty=%B",
+                        returnStdout: true
+                    ).trim()
+
+                    def matcher = (commitMsg =~ /(KB-\\d+)/)
+
+                    if (matcher.find()) {
+
+                        env.JIRA_ID = matcher.group(1)
+
+                        echo "🎫 Jira Ticket Found: ${env.JIRA_ID}"
+
+                    }
+                    else {
+
+                        env.JIRA_ID = ""
+
+                        echo "ℹ No Jira Ticket Found in commit message"
+                    }
+                }
+            }
+        }
     }
+
+    post {
+
+        success {
+            script {
+                echo "✅ PR Validation Successful"
+                echo "Manager can now review and merge the PR."
+            }
+        }
+
+        failure {
+            script {
+                echo "❌ PR Validation Failed"
+                echo "Merge will be blocked by GitHub Branch Protection."
+            }
+        }
+
+        always {
+            echo "🏁 PR Validation Pipeline Completed"
+        }
+    }
+}
+```
 
 }
