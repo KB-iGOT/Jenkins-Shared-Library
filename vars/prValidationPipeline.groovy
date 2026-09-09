@@ -52,12 +52,6 @@ pipeline {
                         .last()
                         .replace('.git', '')
 
-                    if (repoName == "sunbird-cb-orgportal") {
-                    echo "Skipping Sonar PR validation for Portal application until Karthikeyan confirmation"
-                    env.IS_PR_BUILD = "false"
-                    return
-                    }
-
                     echo "Running SonarQube PR analysis"
                     echo "Repository: ${repoName}"
                     echo "PR Number: ${env.CHANGE_ID}"
