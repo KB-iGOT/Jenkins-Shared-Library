@@ -130,11 +130,13 @@ pipeline {
                             echo "Running Python SonarQube analysis"
 
                             sh """
+                                mkdir -p .scannerwork
+                                mkdir -p .sonar-cache
                                 docker run --rm \
-                                  -u \$(id -u):\$(id -g) \
                                   -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
                                   -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
                                   -v "\$(pwd):/usr/src" \
+                                  -v "\$(pwd)/.sonar-cache:/opt/sonar-scanner/.sonar/cache" \
                                   sonarsource/sonar-scanner-cli \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=. \
@@ -142,7 +144,6 @@ pipeline {
                                   -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
                                   -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
                                   -Dsonar.exclusions="**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc" \
-                                  -Dsonar.working.directory=/usr/src/.scannerwork
                             """
 
                         }
