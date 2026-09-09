@@ -132,6 +132,7 @@ pipeline {
                             sh """
                                 mkdir -p .scannerwork
                                 mkdir -p .sonar-cache
+                                chmod -R 777 .sonar-cache
                                 docker run --rm \
                                   -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
                                   -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
