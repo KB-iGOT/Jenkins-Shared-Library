@@ -101,8 +101,17 @@ pipeline {
                                 docker run --rm \
                                   -v "\$(pwd):/usr/src" \
                                   node:22 \
-                                  sh -c "cd /usr/src && yarn && npm run test-coverage"
-                            """
+                                  sh -c '
+                                      cd /usr/src &&
+                                      yarn &&
+                                      (
+                                          npm run test-coverage ||
+                                          npm run test:coverage ||
+                                          npm run coverage ||
+                                          npm test
+                                       )   
+                                    '
+                                """
 
                             echo "Running Node.js SonarQube analysis"
 
