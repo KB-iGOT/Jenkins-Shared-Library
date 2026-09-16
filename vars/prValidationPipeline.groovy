@@ -102,13 +102,14 @@ pipeline {
                                     docker run --rm \
                                       -v "\$(pwd):/usr/src" \
                                       -v /opt/yarn-cache:/usr/local/share/.cache/yarn \
+                                      -v /opt/jest-cache:/tmp/jest-cache \
                                       -e YARN_CACHE_FOLDER=/usr/local/share/.cache/yarn \
                                       node:22 \
                                       sh -c '
                                           echo "Yarn cache: $YARN_CACHE_FOLDER"
                                           yarn cache dir
                                           cd /usr/src &&
-                                          yarn &&
+                                          yarn install --frozen-lockfile --prefer-offline &&
                                           (
                                               npm run test-coverage ||
                                               npm run test:coverage ||
@@ -132,6 +133,7 @@ pipeline {
                                   -v /opt/sonar-cache:/opt/sonar-cache \
                                   sonarsource/sonar-scanner-cli \
                                   -Dsonar.userHome=/opt/sonar-cache \
+                                  -Dsonar.verbose=true \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=src/app \
                                   -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
