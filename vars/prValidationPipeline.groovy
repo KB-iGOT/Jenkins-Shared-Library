@@ -101,8 +101,12 @@ pipeline {
                                 script: """
                                     docker run --rm \
                                       -v "\$(pwd):/usr/src" \
+                                      -v /opt/yarn-cache:/usr/local/share/.cache/yarn \
+                                      -e YARN_CACHE_FOLDER=/usr/local/share/.cache/yarn \
                                       node:22 \
                                       sh -c '
+                                          echo "Yarn cache: $YARN_CACHE_FOLDER"
+                                          yarn cache dir
                                           cd /usr/src &&
                                           yarn &&
                                           (
