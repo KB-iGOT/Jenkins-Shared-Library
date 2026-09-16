@@ -124,6 +124,7 @@ pipeline {
                             echo "Node Test Status: ${testStatus}"
 
                             if (testStatus != 0) {
+                                currentBuild.result = 'UNSTABLE'
                                 echo "Tests failed. Continuing with Sonar analysis."
                             }
 
@@ -146,7 +147,7 @@ pipeline {
                                   -Dsonar.tests=src/app \
                                   -Dsonar.test.inclusions="**/*.spec.ts" \
                                   -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
-                                  -Dsonar.exclusions="**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*.interface.ts,**/*.enum.ts,**/*.routing.ts,**/*.routes.ts,**/*.spec.ts,**/*.mock.ts,**/*.stub.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,**/assets/**,**/mdo-assets/**,**/themes/**,**/styles/**,**/coverage/**,**/dist/**,**/.angular/**,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js" \
+                                  -Dsonar.exclusions="**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*.interface.ts,**/*.enum.ts,**/*.routing.ts,**/*.routes.ts,**/*.spec.ts,**/*.mock.ts,**/*.stub.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,**/assets/**,**/mdo-assets/**,**/themes/**,**/styles/**,**/coverage/**,**/dist/**,**/.angular/**,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js"
                             """
 
                         }
