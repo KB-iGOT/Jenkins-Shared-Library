@@ -106,7 +106,7 @@ pipeline {
                                       -e YARN_CACHE_FOLDER=/usr/local/share/.cache/yarn \
                                       node:22 \
                                       sh -c '
-                                          echo "Yarn cache: $YARN_CACHE_FOLDER"
+                                          echo "Yarn cache: \$YARN_CACHE_FOLDER"
                                           yarn cache dir
                                           cd /usr/src &&
                                           yarn install --frozen-lockfile --prefer-offline &&
