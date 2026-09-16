@@ -97,21 +97,26 @@ pipeline {
 
                             echo "Running Node.js tests and coverage"
 
-                            sh """
-                                docker run --rm \
-                                  -v "\$(pwd):/usr/src" \
-                                  node:22 \
-                                  sh -c '
-                                      cd /usr/src &&
-                                      yarn &&
-                                      (
-                                          npm run test-coverage ||
-                                          npm run test:coverage ||
-                                          npm run coverage ||
-                                          npm test
-                                       )   
-                                    '
-                                """
+                            def testStatus = sh(
+                                script: """
+                                    docker run --rm \
+                                      -v "\$(pwd):/usr/src" \
+                                      node:22 \
+                                      sh -c '
+                                          cd /usr/src &&
+                                          yarn &&
+                                          (
+                                              npm run test-coverage ||
+                                              npm run test:coverage ||
+                                              npm run coverage ||
+                                              npm test
+                                          )
+                                      '
+                                """,
+                                returnStatus: true
+                            )
+
+                            echo "Node Test Status: ${testStatus}"
 
                             echo "Running Node.js SonarQube analysis"
 
