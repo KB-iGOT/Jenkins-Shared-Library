@@ -123,6 +123,10 @@ pipeline {
 
                             echo "Node Test Status: ${testStatus}"
 
+                            if (testStatus != 0) {
+                                error("Node.js tests failed")
+                            }
+
                             echo "Running Node.js SonarQube analysis"
 
                             sh """
