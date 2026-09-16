@@ -109,7 +109,7 @@ pipeline {
                                           echo "Yarn cache: \$YARN_CACHE_FOLDER"
                                           yarn cache dir
                                           cd /usr/src &&
-                                          yarn install --frozen-lockfile --prefer-offline &&
+                                          yarn install --prefer-offline &&
                                           (
                                               npm run test-coverage ||
                                               npm run test:coverage ||
@@ -143,7 +143,6 @@ pipeline {
                                   -Dsonar.test.inclusions="**/*.spec.ts" \
                                   -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
                                   -Dsonar.exclusions="**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*.interface.ts,**/*.enum.ts,**/*.routing.ts,**/*.routes.ts,**/*.spec.ts,**/*.mock.ts,**/*.stub.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,**/assets/**,**/mdo-assets/**,**/themes/**,**/styles/**,**/coverage/**,**/dist/**,**/.angular/**,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js" \
-                                  -Dsonar.working.directory=/usr/src/.scannerwork
                             """
 
                         }
