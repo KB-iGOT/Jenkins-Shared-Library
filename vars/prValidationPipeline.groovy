@@ -135,7 +135,6 @@ pipeline {
                                   -Dsonar.tests=src \
                                   -Dsonar.test.inclusions="**/*.spec.ts" \
                                   -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
-                                  -Dsonar.working.directory=/usr/src/.scannerwork
                             """
 
                         }
