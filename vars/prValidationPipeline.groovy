@@ -1,3 +1,56 @@
+def getQualityGateStatus(String sonarUrl,
+                         String token,
+                         String projectKey) {
+
+    def ceTaskId = sh(
+        script: """
+            curl -s -u ${token}: \
+            "${sonarUrl}/api/ce/component?component=${projectKey}" |
+            python3 -c "import sys,json; print(json.load(sys.stdin)['current']['id'])"
+        """,
+        returnStdout: true
+    ).trim()
+
+    echo "CE Task ID: ${ceTaskId}"
+
+    timeout(time: 10, unit: 'MINUTES') {
+
+        waitUntil {
+
+            def taskStatus = sh(
+                script: """
+                    curl -s -u ${token}: \
+                    "${sonarUrl}/api/ce/task?id=${ceTaskId}" |
+                    python3 -c "import sys,json; print(json.load(sys.stdin)['task']['status'])"
+                """,
+                returnStdout: true
+            ).trim()
+
+            echo "Task Status : ${taskStatus}"
+
+            return taskStatus == "SUCCESS"
+        }
+    }
+
+    def analysisId = sh(
+        script: """
+            curl -s -u ${token}: \
+            "${sonarUrl}/api/ce/task?id=${ceTaskId}" |
+            python3 -c "import sys,json; print(json.load(sys.stdin)['task']['analysisId'])"
+        """,
+        returnStdout: true
+    ).trim()
+
+    return sh(
+        script: """
+            curl -s -u ${token}: \
+            "${sonarUrl}/api/qualitygates/project_status?analysisId=${analysisId}" |
+            python3 -c "import sys,json; print(json.load(sys.stdin)['projectStatus']['status'])"
+        """,
+        returnStdout: true
+    ).trim()
+}
+
 def call(Map config = [:]) {
 
 pipeline {
@@ -242,12 +295,38 @@ pipeline {
         }
         */
         stage('Quality Gate') {
-            steps {
-                script {
-                    echo "Quality Gate temporarily skipped."
-                }
-            }
+
+    when {
+        expression {
+            env.IS_PR_BUILD == "true"
         }
+    }
+
+    steps {
+
+        script {
+
+            echo "Checking SonarQube Quality Gate"
+
+            def qgStatus = getQualityGateStatus(
+                SONAR_HOST_URL,
+                SONAR_AUTH_TOKEN,
+                env.REPO_NAME
+            )
+
+            echo "Quality Gate Status : ${qgStatus}"
+
+            if (qgStatus != "OK") {
+
+                error(
+                    "SonarQube Quality Gate Failed : ${qgStatus}"
+                )
+            }
+
+            echo "Quality Gate Passed"
+        }
+    }
+}
         stage('Extract Jira Ticket') {
             steps {
                 script {
