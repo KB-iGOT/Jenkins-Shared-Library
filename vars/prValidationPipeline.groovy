@@ -208,6 +208,11 @@ pipeline {
                                   -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
                                   -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
                             """
+                            sh """
+                               echo "Checking report-task.txt"
+                               ls -ltr report-task.txt || true
+                               cat report-task.txt || true
+                            """
                         }
  
                         echo "SonarQube analysis completed successfully"
