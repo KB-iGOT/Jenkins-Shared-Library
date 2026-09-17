@@ -137,6 +137,9 @@ pipeline {
                             def scannerHome = tool 'sonar-scanner'
  
                             sh """
+                              rm -rf .scannerwork || true
+                              mkdir -p .scannerwork
+                              
                               export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
                               export PATH=\$JAVA_HOME/bin:\$PATH
 
