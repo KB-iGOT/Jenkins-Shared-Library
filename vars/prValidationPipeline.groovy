@@ -146,8 +146,8 @@ pipeline {
                               java -version
                                 ${scannerHome}/bin/sonar-scanner \
                                   -Dsonar.scanner.skipJreProvisioning=true \
-                                  -Dsonar.host.url="${SONAR_HOST_URL}"
-                                  -Dsonar.token="${SONAR_AUTH_TOKEN}"
+                                  -Dsonar.host.url="${SONAR_HOST_URL}" \
+                                  -Dsonar.token="${SONAR_AUTH_TOKEN}" \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=src \
                                   -Dsonar.tests=src \
