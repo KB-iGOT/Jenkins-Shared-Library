@@ -241,12 +241,36 @@ pipeline {
         }
         */
         stage('Quality Gate') {
-            steps {
-                script {
-                    echo "Quality Gate temporarily skipped."
+
+    when {
+        expression {
+            env.IS_PR_BUILD == "true"
+        }
+    }
+
+    steps {
+
+        timeout(time: 10, unit: 'MINUTES') {
+
+            script {
+
+                echo "Waiting for SonarQube Quality Gate..."
+
+                def qg = waitForQualityGate(
+                    abortPipeline: false
+                )
+
+                echo "Quality Gate Status: ${qg.status}"
+
+                if (qg.status != 'OK') {
+                    error("SonarQube Quality Gate Failed: ${qg.status}")
                 }
+
+                echo "SonarQube Quality Gate Passed"
             }
         }
+    }
+}
         stage('Extract Jira Ticket') {
             steps {
                 script {
