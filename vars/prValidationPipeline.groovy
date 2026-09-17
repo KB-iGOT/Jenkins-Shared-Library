@@ -1,79 +1,3 @@
-def getCeTaskId() {
-
-    if (fileExists("target/sonar/report-task.txt")) {
-        return sh(
-            script: """
-                grep '^ceTaskId=' target/sonar/report-task.txt | cut -d= -f2
-            """,
-            returnStdout: true
-        ).trim()
-    }
-
-    if (fileExists("report-task.txt")) {
-        return sh(
-            script: """
-                grep '^ceTaskId=' report-task.txt | cut -d= -f2
-            """,
-            returnStdout: true
-        ).trim()
-    }
-
-    error("report-task.txt not found")
-}
-
-def getQualityGateStatus(String sonarUrl,
-                         String token) {
-    
-
-    def ceTaskId = getCeTaskId()
-
-    echo "CE Task ID: ${ceTaskId}"
-
-    timeout(time: 10, unit: 'MINUTES') {
-
-        waitUntil {
-
-            def taskStatus = sh(
-                script: """
-                    curl -s -u ${token}: \
-                    "${sonarUrl}/api/ce/task?id=${ceTaskId}" |
-                    python3 -c "import sys,json; print(json.load(sys.stdin)['task']['status'])"
-                """,
-                returnStdout: true
-            ).trim()
-
-            echo "Task Status : ${taskStatus}"
-
-            if (taskStatus == "FAILED") {
-                error("Sonar CE Task Failed")
-            }
-
-            if (taskStatus == "CANCELED") {
-                error("Sonar CE Task Cancelled")
-            }
-
-            return taskStatus == "SUCCESS"
-        }
-    }
-
-    def analysisId = sh(
-        script: """
-            curl -s -u ${token}: \
-            "${sonarUrl}/api/ce/task?id=${ceTaskId}" |
-            python3 -c "import sys,json; print(json.load(sys.stdin)['task']['analysisId'])"
-        """,
-        returnStdout: true
-    ).trim()
-
-    return sh(
-        script: """
-            curl -s -u ${token}: \
-            "${sonarUrl}/api/qualitygates/project_status?analysisId=${analysisId}" |
-            python3 -c "import sys,json; print(json.load(sys.stdin)['projectStatus']['status'])"
-        """,
-        returnStdout: true
-    ).trim()
-}
 
 def call(Map config = [:]) {
 
@@ -224,9 +148,10 @@ pipeline {
                                   -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
                                   -v "\$(pwd):/usr/src" \
                                   -v /opt/sonar-cache:/opt/sonar-cache \
+                                  -w /usr/src \
                                   sonarsource/sonar-scanner-cli \
                                   -Dsonar.userHome=/opt/sonar-cache \
-                                  -Dsonar.scanner.metadataFile=/usr/src/report-task.txt \
+                                  -Dsonar.scanner.metadataFile=report-task.txt \
                                   -Dsonar.verbose=true \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=src \
@@ -237,6 +162,14 @@ pipeline {
                                   -Dsonar.test.inclusions="**/*.spec.ts" \
                                   -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
                                   -Dsonar.exclusions="**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*.interface.ts,**/*.enum.ts,**/*.routing.ts,**/*.routes.ts,**/*.spec.ts,**/*.mock.ts,**/*.stub.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,**/assets/**,**/mdo-assets/**,**/themes/**,**/styles/**,**/coverage/**,**/dist/**,**/.angular/**,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js"
+                            """
+
+                            sh """
+                                echo "==== Sonar Metadata File ===="
+                                pwd
+                                ls -ltr
+                                ls -ltr report-task.txt || true
+                                cat report-task.txt || true
                             """
 
                         }
@@ -254,13 +187,14 @@ pipeline {
                                   -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
                                   -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
                                   -v "\$(pwd):/usr/src" \
+                                  -w /usr/src \
                                   sonarsource/sonar-scanner-cli \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=. \
                                   -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
                                   -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
                                   -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
-                                  -Dsonar.scanner.metadataFile=/usr/src/report-task.txt \
+                                  -Dsonar.scanner.metadataFile=report-task.txt \
                                   -Dsonar.exclusions="**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc" \
                             """
 
@@ -299,7 +233,6 @@ pipeline {
                 }
             }
         }
-        /*
         stage('Quality Gate') {
 
     when {
@@ -310,25 +243,18 @@ pipeline {
 
     steps {
 
-        script {
+        timeout(time: 10, unit: 'MINUTES') {
 
-            withSonarQubeEnv("${SONARQUBE_ENV}") {
+            script {
 
-                echo "Checking SonarQube Quality Gate"
+                echo "Waiting for SonarQube Quality Gate..."
 
-                def qgStatus = getQualityGateStatus(
-                    env.SONAR_HOST_URL,
-                    env.SONAR_AUTH_TOKEN,
-                    env.REPO_NAME
-                )
+                def qg = waitForQualityGate()
 
-                echo "Quality Gate Status: ${qgStatus}"
+                echo "Quality Gate Status: ${qg.status}"
 
-                if (qgStatus != "OK") {
-
-                    error(
-                        "SonarQube Quality Gate Failed: ${qgStatus}"
-                    )
+                if (qg.status != 'OK') {
+                    error("SonarQube Quality Gate Failed: ${qg.status}")
                 }
 
                 echo "SonarQube Quality Gate Passed"
@@ -336,37 +262,7 @@ pipeline {
         }
     }
 }
-        */
-        stage('Quality Gate') {
 
-    when {
-        expression {
-            env.IS_PR_BUILD == "true"
-        }
-    }
-
-    steps {
-        script {
-
-            withSonarQubeEnv("${SONARQUBE_ENV}") {
-
-                def qgStatus = getQualityGateStatus(
-                    env.SONAR_HOST_URL,
-                    env.SONAR_AUTH_TOKEN,
-                    env.REPO_NAME
-                )
-
-                echo "Quality Gate Status: ${qgStatus}"
-
-                if (qgStatus != "OK") {
-                    error("SonarQube Quality Gate Failed: ${qgStatus}")
-                }
-
-                echo "SonarQube Quality Gate Passed"
-            }
-        }
-    }
-}
         stage('Extract Jira Ticket') {
             steps {
                 script {
