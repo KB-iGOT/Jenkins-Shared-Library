@@ -1,15 +1,31 @@
-def getQualityGateStatus(String sonarUrl,
-                         String token,
-                         String projectKey) {
+def getCeTaskId() {
 
-    def ceTaskId = sh(
-        script: """
-            curl -s -u ${token}: \
-            "${sonarUrl}/api/ce/component?component=${projectKey}" |
-            python3 -c "import sys,json; print(json.load(sys.stdin)['current']['id'])"
-        """,
-        returnStdout: true
-    ).trim()
+    if (fileExists("target/sonar/report-task.txt")) {
+        return sh(
+            script: """
+                grep '^ceTaskId=' target/sonar/report-task.txt | cut -d= -f2
+            """,
+            returnStdout: true
+        ).trim()
+    }
+
+    if (fileExists("report-task.txt")) {
+        return sh(
+            script: """
+                grep '^ceTaskId=' report-task.txt | cut -d= -f2
+            """,
+            returnStdout: true
+        ).trim()
+    }
+
+    error("report-task.txt not found")
+}
+
+def getQualityGateStatus(String sonarUrl,
+                         String token) {
+    
+
+    def ceTaskId = getCeTaskId()
 
     echo "CE Task ID: ${ceTaskId}"
 
@@ -27,6 +43,14 @@ def getQualityGateStatus(String sonarUrl,
             ).trim()
 
             echo "Task Status : ${taskStatus}"
+
+            if (taskStatus == "FAILED") {
+                error("Sonar CE Task Failed")
+            }
+
+            if (taskStatus == "CANCELED") {
+                error("Sonar CE Task Cancelled")
+            }
 
             return taskStatus == "SUCCESS"
         }
@@ -144,6 +168,12 @@ pipeline {
                                   -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
                                   -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
                                   -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+                            """
+
+                          sh """
+                            echo "==== target/sonar/report-task.txt ===="
+                            ls -ltr target/sonar/report-task.txt || true
+                            cat target/sonar/report-task.txt || true
                             """
 
                         }
@@ -316,12 +346,9 @@ pipeline {
     }
 
     steps {
-
         script {
 
             withSonarQubeEnv("${SONARQUBE_ENV}") {
-
-                echo "Checking SonarQube Quality Gate"
 
                 def qgStatus = getQualityGateStatus(
                     env.SONAR_HOST_URL,
@@ -332,10 +359,7 @@ pipeline {
                 echo "Quality Gate Status: ${qgStatus}"
 
                 if (qgStatus != "OK") {
-
-                    error(
-                        "SonarQube Quality Gate Failed: ${qgStatus}"
-                    )
+                    error("SonarQube Quality Gate Failed: ${qgStatus}")
                 }
 
                 echo "SonarQube Quality Gate Passed"
