@@ -245,6 +245,11 @@ pipeline {
 
                             echo "Running generic SonarQube scan"
 
+                          sh """
+                            git fetch origin ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} || true
+                            git branch -a
+                          """
+
                             sh """
                                 docker run --rm \
                                   -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
@@ -266,33 +271,41 @@ pipeline {
         }
         /*
         stage('Quality Gate') {
-            steps {
-                script {
 
-                    if (env.IS_PR_BUILD != "true") {
-                        echo "Skipping Quality Gate for non-PR build."
-                        return
-                    }
+    when {
+        expression {
+            env.IS_PR_BUILD == "true"
+        }
+    }
 
-                    echo "Waiting for SonarQube Quality Gate"
+    steps {
 
-                    timeout(time: 10, unit: 'MINUTES') {
+        script {
 
-                        def qg = waitForQualityGate(
-                            abortPipeline: false
-                        )
+            withSonarQubeEnv("${SONARQUBE_ENV}") {
 
-                        echo "Quality Gate Status: ${qg.status}"
+                echo "Checking SonarQube Quality Gate"
 
-                        if (qg.status != 'OK') {
-                            error("SonarQube Quality Gate Failed: ${qg.status}")
-                        }
+                def qgStatus = getQualityGateStatus(
+                    env.SONAR_HOST_URL,
+                    env.SONAR_AUTH_TOKEN,
+                    env.REPO_NAME
+                )
 
-                        echo "SonarQube Quality Gate Passed"
-                    }
+                echo "Quality Gate Status: ${qgStatus}"
+
+                if (qgStatus != "OK") {
+
+                    error(
+                        "SonarQube Quality Gate Failed: ${qgStatus}"
+                    )
                 }
+
+                echo "SonarQube Quality Gate Passed"
             }
         }
+    }
+}
         */
         stage('Quality Gate') {
 
