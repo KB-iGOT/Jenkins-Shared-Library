@@ -129,6 +129,10 @@ pipeline {
                             }
 
                             echo "Running Node.js SonarQube analysis"
+                            sh """
+                            git fetch origin ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} || true
+                            git branch -a
+                            """
 
                             sh """
                                 docker run --rm \
@@ -203,6 +207,15 @@ pipeline {
                         }
 
                         echo "SonarQube analysis completed successfully"
+                        echo "Checking Sonar metadata file"
+
+                        sh '''
+                        pwd
+                        ls -ltr
+                        ls -ltr report-task.txt || true
+                        find . -name report-task.txt || true
+                        cat report-task.txt || true
+                        '''
                     }
                 }
             }
