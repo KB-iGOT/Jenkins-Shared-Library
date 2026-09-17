@@ -51,6 +51,7 @@ pipeline {
                         .tokenize('/')
                         .last()
                         .replace('.git', '')
+                    env.REPO_NAME = repoName
 
                     echo "Running SonarQube PR analysis"
                     echo "Repository: ${repoName}"
