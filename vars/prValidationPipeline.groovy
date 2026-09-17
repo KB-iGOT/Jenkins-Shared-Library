@@ -142,6 +142,7 @@ pipeline {
 
                               java -version
                                 ${scannerHome}/bin/sonar-scanner \
+                                  -Dsonar.scanner.skipJreProvisioning=true \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=src \
                                   -Dsonar.tests=src \
