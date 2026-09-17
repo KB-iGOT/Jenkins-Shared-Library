@@ -138,6 +138,7 @@ pipeline {
                                   -v /opt/sonar-cache:/opt/sonar-cache \
                                   sonarsource/sonar-scanner-cli \
                                   -Dsonar.userHome=/opt/sonar-cache \
+                                  -Dsonar.scanner.metadataFile=/usr/src/report-task.txt \
                                   -Dsonar.verbose=true \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=src \
