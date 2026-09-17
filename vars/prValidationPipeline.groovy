@@ -168,14 +168,14 @@ pipeline {
                             """
  
                             echo "Running Python SonarQube analysis"
+
+                            def scannerHome = tool 'sonar-scanner'
  
                             sh """
-                                mkdir -p .scannerwork
-                                docker run --rm \
+                               ${scannerHome}/bin/sonar-scanner \
+                                  -Dsonar.scanner.skipJreProvisioning=true \
                                   -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
                                   -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
-                                  -v "\$(pwd):/usr/src" \
-                                  sonarsource/sonar-scanner-cli \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=. \
                                   -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
@@ -195,13 +195,14 @@ pipeline {
                         else {
  
                             echo "Running generic SonarQube scan"
+
+                            def scannerHome = tool 'sonar-scanner'
  
                             sh """
-                                docker run --rm \
-                                  -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
-                                  -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
-                                  -v "\$(pwd):/usr/src" \
-                                  sonarsource/sonar-scanner-cli \
+                                ${scannerHome}/bin/sonar-scanner \
+                                  -Dsonar.scanner.skipJreProvisioning=true \
+                                  -Dsonar.host.url="${SONAR_HOST_URL}" \
+                                  -Dsonar.token="${SONAR_AUTH_TOKEN}" \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=. \
                                   -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
