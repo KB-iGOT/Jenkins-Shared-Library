@@ -319,24 +319,27 @@ pipeline {
 
         script {
 
-            echo "Checking SonarQube Quality Gate"
+            withSonarQubeEnv("${SONARQUBE_ENV}") {
 
-            def qgStatus = getQualityGateStatus(
-                SONAR_HOST_URL,
-                SONAR_AUTH_TOKEN,
-                env.REPO_NAME
-            )
+                echo "Checking SonarQube Quality Gate"
 
-            echo "Quality Gate Status : ${qgStatus}"
-
-            if (qgStatus != "OK") {
-
-                error(
-                    "SonarQube Quality Gate Failed : ${qgStatus}"
+                def qgStatus = getQualityGateStatus(
+                    env.SONAR_HOST_URL,
+                    env.SONAR_AUTH_TOKEN,
+                    env.REPO_NAME
                 )
-            }
 
-            echo "Quality Gate Passed"
+                echo "Quality Gate Status: ${qgStatus}"
+
+                if (qgStatus != "OK") {
+
+                    error(
+                        "SonarQube Quality Gate Failed: ${qgStatus}"
+                    )
+                }
+
+                echo "SonarQube Quality Gate Passed"
+            }
         }
     }
 }
