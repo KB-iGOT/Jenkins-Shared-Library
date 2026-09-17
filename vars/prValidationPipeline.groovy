@@ -133,6 +133,8 @@ pipeline {
                             git fetch origin ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} || true
                             git branch -a
                             """
+
+                            def scannerHome = tool 'sonar-scanner'
  
                             sh """
                                 ${scannerHome}/bin/sonar-scanner \
