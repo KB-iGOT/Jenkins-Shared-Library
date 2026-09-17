@@ -152,18 +152,14 @@ pipeline {
                                   -Dsonar.sources=src \
                                   -Dsonar.tests=. \
                                   -Dsonar.userHome=/opt/sonar-cache \
-                                  -Dsonar.verbose=true \
-                                  
+                                  -Dsonar.verbose=true \                                  
                                   -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
                                   -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
-                                  -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
-                                  
+                                  -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \                                  
                                   -Dsonar.test.inclusions=**/*.spec.ts \
                                   -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
                                   -Dsonar.exclusions="**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*.interface.ts,**/*.enum.ts,**/*.routing.ts,**/*.routes.ts,**/*.spec.ts,**/*.mock.ts,**/*.stub.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,**/assets/**,**/mdo-assets/**,**/themes/**,**/styles/**,**/coverage/**,**/dist/**,**/.angular/**,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js"
                             """
-                            
-                            
                         }
                         else if (env.PROJECT_TYPE == "python") {
  
