@@ -139,10 +139,11 @@ pipeline {
                                   -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
                                   -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
                                   -v "\$(pwd):/usr/src" \
+                                  -v "\$(pwd)/.scannerwork:/tmp/.scannerwork" \
                                   -v /opt/sonar-cache:/opt/sonar-cache \
                                   sonarsource/sonar-scanner-cli \
                                   -Dsonar.userHome=/opt/sonar-cache \
-                                  -Dsonar.scanner.metadataFile=/usr/src/report-task.txt \
+                                  -Dsonar.scanner.metadataFile=/tmp/.scannerwork/report-task.txt \
                                   -Dsonar.verbose=true \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=src \
@@ -159,7 +160,8 @@ pipeline {
                                pwd
                                ls -ltr
                                ls -ltr report-task.txt || true
-                               cat report-task.txt || true
+                               echo "==== REPORT FILE ===="
+                               cat .scannerwork/report-task.txt || true
                               """
                             
                         }
