@@ -137,9 +137,11 @@ pipeline {
                             def scannerHome = tool 'sonar-scanner'
  
                             sh """
+                              export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
+                              export PATH=\$JAVA_HOME/bin:\$PATH
+
+                              java -version
                                 ${scannerHome}/bin/sonar-scanner \
-                                  -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
-                                  -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=src \
                                   -Dsonar.tests=src \
