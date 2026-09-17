@@ -154,7 +154,14 @@ pipeline {
                                   -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
                                   -Dsonar.exclusions="**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*.interface.ts,**/*.enum.ts,**/*.routing.ts,**/*.routes.ts,**/*.spec.ts,**/*.mock.ts,**/*.stub.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,**/assets/**,**/mdo-assets/**,**/themes/**,**/styles/**,**/coverage/**,**/dist/**,**/.angular/**,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js"
                             """
- 
+                            sh """
+                               echo "==== CHECKING report-task.txt ===="
+                               pwd
+                               ls -ltr
+                               ls -ltr report-task.txt || true
+                               cat report-task.txt || true
+                              """
+                            
                         }
                         else if (env.PROJECT_TYPE == "python") {
  
