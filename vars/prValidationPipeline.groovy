@@ -150,7 +150,7 @@ pipeline {
                                   -Dsonar.token="${SONAR_AUTH_TOKEN}" \
                                   -Dsonar.projectKey="${repoName}" \
                                   -Dsonar.sources=src \
-                                  -Dsonar.tests=src \
+                                  -Dsonar.tests=. \
                                   -Dsonar.userHome=/opt/sonar-cache \
                                   -Dsonar.verbose=true \
                                   
@@ -158,7 +158,7 @@ pipeline {
                                   -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
                                   -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
                                   
-                                  -Dsonar.test.inclusions="**/*.spec.ts" \
+                                  -Dsonar.test.inclusions=**/*.spec.ts \
                                   -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
                                   -Dsonar.exclusions="**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*.interface.ts,**/*.enum.ts,**/*.routing.ts,**/*.routes.ts,**/*.spec.ts,**/*.mock.ts,**/*.stub.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,**/assets/**,**/mdo-assets/**,**/themes/**,**/styles/**,**/coverage/**,**/dist/**,**/.angular/**,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js"
                             """
