@@ -274,7 +274,7 @@ def call(Map config = [:]) {
                             echo "Jira Ticket Found: ${env.JIRA_ID}"
                         } else {
                             env.JIRA_ID = ""
-                            echo "No Jira Ticket Found in commit message"
+                            error("Jira Ticket is mandatory. Commit message must contain a valid Jira ID in the format KB-1234.")
                         }
                     }
                 }
