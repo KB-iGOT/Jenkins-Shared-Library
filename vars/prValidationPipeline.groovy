@@ -1,3 +1,4 @@
+```groovy
 def call(Map config = [:]) {
     pipeline {
         agent any
@@ -25,6 +26,30 @@ def call(Map config = [:]) {
                         }
 
                         echo "Detected Project Type: ${env.PROJECT_TYPE}"
+                    }
+                }
+            }
+
+            stage('Extract Jira Ticket') {
+                steps {
+                    script {
+                        def commitMsg = sh(
+                            script: "git log -1 --pretty=%B",
+                            returnStdout: true
+                        ).trim()
+
+                        def matcher = (commitMsg =~ /(KB-\d+)/)
+
+                        if (matcher.find()) {
+                            env.JIRA_ID = matcher.group(1)
+                            echo "Jira Ticket Found: ${env.JIRA_ID}"
+                        } else {
+                            env.JIRA_ID = ""
+                            error(
+                                "Jira Ticket is mandatory. Commit message must " +
+                                "contain a valid Jira ID in the format KB-1234."
+                            )
+                        }
                     }
                 }
             }
@@ -113,6 +138,7 @@ def call(Map config = [:]) {
                                 }
 
                                 echo "Running Node.js SonarQube analysis"
+
                                 sh """
                                     git fetch origin ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} || true
                                     git branch -a
@@ -128,6 +154,7 @@ def call(Map config = [:]) {
                                     export PATH=\$JAVA_HOME/bin:\$PATH
 
                                     java -version
+
                                     ${scannerHome}/bin/sonar-scanner \
                                       -Dsonar.scanner.skipJreProvisioning=true \
                                       -Dsonar.host.url="${SONAR_HOST_URL}" \
@@ -156,7 +183,9 @@ def call(Map config = [:]) {
                                 sh """
                                     export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
                                     export PATH=\$JAVA_HOME/bin:\$PATH
+
                                     java -version
+
                                     ${scannerHome}/bin/sonar-scanner \
                                       -Dsonar.scanner.skipJreProvisioning=true \
                                       -Dsonar.host.url="${SONAR_HOST_URL}" \
@@ -167,7 +196,7 @@ def call(Map config = [:]) {
                                       -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
                                       -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
                                       -Dsonar.scanner.metadataFile=/usr/src/report-task.txt \
-                                      -Dsonar.exclusions="**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc" \
+                                      -Dsonar.exclusions="**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc"
                                 """
                             } else {
                                 echo "Running generic SonarQube scan"
@@ -177,6 +206,7 @@ def call(Map config = [:]) {
                                 sh """
                                     export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
                                     export PATH=\$JAVA_HOME/bin:\$PATH
+
                                     java -version
 
                                     ${scannerHome}/bin/sonar-scanner \
@@ -187,7 +217,7 @@ def call(Map config = [:]) {
                                       -Dsonar.sources=. \
                                       -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
                                       -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
-                                      -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
+                                      -Dsonar.pullrequest.base="${env.CHANGE_TARGET}"
                                 """
 
                                 sh """
@@ -231,6 +261,7 @@ def call(Map config = [:]) {
                 }
             }
             */
+
             stage('Quality Gate') {
                 when {
                     expression {
@@ -250,31 +281,12 @@ def call(Map config = [:]) {
                             echo "Quality Gate Status: ${qg.status}"
 
                             if (qg.status != 'OK') {
-                                error("SonarQube Quality Gate Failed: ${qg.status}")
+                                error(
+                                    "SonarQube Quality Gate Failed: ${qg.status}"
+                                )
                             }
 
                             echo "SonarQube Quality Gate Passed"
-                        }
-                    }
-                }
-            }
-
-            stage('Extract Jira Ticket') {
-                steps {
-                    script {
-                        def commitMsg = sh(
-                            script: "git log -1 --pretty=%B",
-                            returnStdout: true
-                        ).trim()
-
-                        def matcher = (commitMsg =~ /(KB-\d+)/)
-
-                        if (matcher.find()) {
-                            env.JIRA_ID = matcher.group(1)
-                            echo "Jira Ticket Found: ${env.JIRA_ID}"
-                        } else {
-                            env.JIRA_ID = ""
-                            error("Jira Ticket is mandatory. Commit message must contain a valid Jira ID in the format KB-1234.")
                         }
                     }
                 }
@@ -302,3 +314,4 @@ def call(Map config = [:]) {
         }
     }
 }
+```
