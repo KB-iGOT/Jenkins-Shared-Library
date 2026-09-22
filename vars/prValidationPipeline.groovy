@@ -105,7 +105,16 @@ def call(Map config = [:]) {
                                       -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
                                 """
                             } else if (env.PROJECT_TYPE == "node") {
-                                echo "Running Node.js tests and coverage"
+                                echo "Running Node.js PR tests for changed code"
+
+                                // Fetch target branch so Jest can compare PR changes
+                                sh """
+                                    git fetch origin ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} || true
+
+                                    echo "PR Target Branch: ${env.CHANGE_TARGET}"
+                                    echo "Changed files in this PR:"
+                                    git diff --name-only ${env.CHANGE_TARGET}...HEAD || true
+                                """
 
                                 def testStatus = sh(
                                     script: """
@@ -116,32 +125,35 @@ def call(Map config = [:]) {
                                           sh -c '
                                               echo "Yarn cache: \$YARN_CACHE_FOLDER"
                                               yarn cache dir
+
                                               cd /usr/src &&
+
                                               yarn install --prefer-offline &&
-                                              (
-                                                  npm run test-coverage ||
-                                                  npm run test:coverage ||
-                                                  npm run coverage ||
-                                                  npm test
-                                              )
+
+                                              ./node_modules/.bin/jest \
+                                                --changedSince=${env.CHANGE_TARGET} \
+                                                --silent \
+                                                --ci \
+                                                --coverage \
+                                                --coverageReporters=lcov \
+                                                --detectOpenHandles \
+                                                --forceExit \
+                                                --passWithNoTests
                                           '
                                     """,
                                     returnStatus: true
                                 )
 
-                                echo "Node Test Status: ${testStatus}"
+                                echo "Changed-code Test Status: ${testStatus}"
 
                                 if (testStatus != 0) {
-                                    currentBuild.result = 'UNSTABLE'
-                                    echo "Tests failed. Continuing with Sonar analysis."
+                                    error(
+                                        "Unit tests related to changed PR code failed. " +
+                                        "Developer needs to fix the affected tests/code."
+                                    )
                                 }
 
                                 echo "Running Node.js SonarQube analysis"
-
-                                sh """
-                                    git fetch origin ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} || true
-                                    git branch -a
-                                """
 
                                 def scannerHome = tool 'sonar-scanner'
 
