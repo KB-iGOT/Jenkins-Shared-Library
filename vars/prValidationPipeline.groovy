@@ -279,6 +279,44 @@ def call(Map config = [:]) {
 
                             echo "Quality Gate Status: ${qg.status}"
 
+                            def repoName = env.GIT_URL
+                                .tokenize('/')
+                                .last()
+                                .replace('.git', '')
+
+                            def sonarDashboardUrl =
+                                "https://dev.karmayogibharat.net/codeanalysis/dashboard" +
+                                "?id=${repoName}&pullRequest=${env.CHANGE_ID}"
+
+                            def githubState = qg.status == 'OK' ? 'success' : 'failure'
+
+                            def githubDescription = qg.status == 'OK' ?
+                                'SonarQube Quality Gate Passed' :
+                                "SonarQube Quality Gate Failed: ${qg.status}"
+
+                            withCredentials([
+                                usernamePassword(
+                                    credentialsId: 'github-cred',
+                                    usernameVariable: 'GITHUB_USER',
+                                    passwordVariable: 'GITHUB_TOKEN'
+                                )
+                            ]) {
+                                sh """
+                                    curl --fail-with-body \
+                                      --request POST \
+                                      --header "Accept: application/vnd.github+json" \
+                                      --header "Authorization: Bearer \$GITHUB_TOKEN" \
+                                      --header "X-GitHub-Api-Version: 2022-11-28" \
+                                      "https://api.github.com/repos/KB-iGOT/${repoName}/statuses/${env.GIT_COMMIT}" \
+                                      --data '{
+                                        "state": "${githubState}",
+                                        "target_url": "${sonarDashboardUrl}",
+                                        "description": "${githubDescription}",
+                                        "context": "sonarqube/quality-gate"
+                                      }'
+                                """
+                            }
+
                             if (qg.status != 'OK') {
                                 error(
                                     "SonarQube Quality Gate Failed: ${qg.status}"
