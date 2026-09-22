@@ -105,16 +105,37 @@ def call(Map config = [:]) {
                                       -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
                                 """
                             } else if (env.PROJECT_TYPE == "node") {
-                                echo "Running Node.js PR tests for changed code"
+                                echo "Running Node.js tests changed in this PR"
 
-                                // Fetch target branch so Jest can compare PR changes
+                                // Fetch PR target branch
                                 sh """
                                     git fetch origin ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} || true
 
                                     echo "PR Target Branch: ${env.CHANGE_TARGET}"
                                     echo "Changed files in this PR:"
-                                    git diff --name-only ${env.CHANGE_TARGET}...HEAD || true
+                                    git diff --name-only ${env.CHANGE_TARGET}...HEAD
                                 """
+
+                                // Get only test files added or modified by this PR
+                                def changedTestFiles = sh(
+                                    script: """
+                                        git diff --name-only --diff-filter=AM ${env.CHANGE_TARGET}...HEAD \
+                                          | grep -E '\\.(spec|test)\\.(ts|tsx|js|jsx)\$' \
+                                          || true
+                                    """,
+                                    returnStdout: true
+                                ).trim()
+
+                                // Fail PR if developer has not added/modified any test cases
+                                if (!changedTestFiles) {
+                                    error(
+                                        "No unit test files were added or modified in this PR. " +
+                                        "Developer must add/update unit tests for the new code."
+                                    )
+                                }
+
+                                echo "Test files changed in this PR:"
+                                echo "${changedTestFiles}"
 
                                 def testStatus = sh(
                                     script: """
@@ -123,36 +144,32 @@ def call(Map config = [:]) {
                                           -v /opt/jest-cache:/tmp/jest-cache \
                                           node:22 \
                                           sh -c '
-                                              echo "Yarn cache: \$YARN_CACHE_FOLDER"
-                                              yarn cache dir
-
                                               cd /usr/src &&
 
                                               yarn install --prefer-offline &&
 
                                               ./node_modules/.bin/jest \
-                                                --changedSince=${env.CHANGE_TARGET} \
-                                                --silent \
+                                                --runTestsByPath ${changedTestFiles} \
                                                 --ci \
                                                 --coverage \
                                                 --coverageReporters=lcov \
                                                 --detectOpenHandles \
-                                                --forceExit \
-                                                --passWithNoTests
+                                                --forceExit
                                           '
                                     """,
                                     returnStatus: true
                                 )
 
-                                echo "Changed-code Test Status: ${testStatus}"
+                                echo "Changed test files status: ${testStatus}"
 
                                 if (testStatus != 0) {
                                     error(
-                                        "Unit tests related to changed PR code failed. " +
+                                        "Unit tests added/modified in this PR failed. " +
                                         "Developer needs to fix the affected tests/code."
                                     )
                                 }
 
+                                echo "PR unit tests passed successfully"
                                 echo "Running Node.js SonarQube analysis"
 
                                 def scannerHome = tool 'sonar-scanner'
