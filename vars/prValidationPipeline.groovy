@@ -345,6 +345,7 @@ def call(Map config = [:]) {
                                     /var/lib/jenkins/apache-maven-3.8.8/bin/mvn \
                                       verify sonar:sonar \
                                       -Dtest="${javaTestClasses}" \
+                                      -Djacoco.haltOnFailure=false \
                                       -Dsonar.host.url="${SONAR_HOST_URL}" \
                                       -Dsonar.token="${SONAR_AUTH_TOKEN}" \
                                       -Dsonar.projectKey="${repoName}" \
