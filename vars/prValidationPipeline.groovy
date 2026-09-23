@@ -1,6 +1,3 @@
-I corrected the indentation of the Java test class transformation and kept the rest of the pipeline’s content and behavior unchanged. I did not run Jenkins or Groovy validation.
-
-```groovy
 def call(Map config = [:]) {
 
     /*
@@ -921,4 +918,3 @@ def call(Map config = [:]) {
         }
     }
 }
-```
