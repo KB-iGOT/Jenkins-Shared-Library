@@ -2,17 +2,15 @@ def call(Map config = [:]) {
 
     /*
      * ---------------------------------------------------------
-     * Update Jenkins PR validation status on GitHub
+     * Update existing Jenkins PR status on GitHub
      * ---------------------------------------------------------
      *
-     * GitHub status:
-     *   context    : jenkins/pr-validation
-     *   target_url : Jenkins BUILD_URL
+     * IMPORTANT:
+     * This uses the existing required GitHub status context:
      *
-     * States:
-     *   pending
-     *   success
-     *   failure
+     * continuous-integration/jenkins/pr-head
+     *
+     * Details -> Jenkins BUILD_URL
      */
     def updateJenkinsGitHubStatus = { String state, String description ->
 
@@ -22,6 +20,7 @@ def call(Map config = [:]) {
             .replace('.git', '')
 
         echo "Updating Jenkins GitHub status: ${state}"
+        echo "Jenkins status message: ${description}"
 
         withCredentials([
             usernamePassword(
@@ -41,7 +40,7 @@ def call(Map config = [:]) {
                     "state": "${state}",
                     "target_url": "${env.BUILD_URL}",
                     "description": "${description}",
-                    "context": "jenkins/pr-validation"
+                    "context": "continuous-integration/jenkins/pr-head"
                   }'
             """
         }
@@ -59,7 +58,7 @@ def call(Map config = [:]) {
 
             /*
              * ---------------------------------------------------------
-             * Initialize PR validation
+             * Initialize PR Validation
              * ---------------------------------------------------------
              */
             stage('Initialize PR Validation') {
@@ -75,7 +74,7 @@ def call(Map config = [:]) {
 
                         updateJenkinsGitHubStatus(
                             'pending',
-                            'Jenkins PR Validation Running'
+                            'Jenkins PR validation is running'
                         )
 
                         echo "Jenkins Build URL: ${env.BUILD_URL}"
@@ -91,7 +90,6 @@ def call(Map config = [:]) {
             stage('Detect Project Type') {
 
                 steps {
-
                     script {
 
                         if (fileExists("pom.xml")) {
@@ -128,7 +126,6 @@ def call(Map config = [:]) {
             stage('Extract Jira Ticket') {
 
                 steps {
-
                     script {
 
                         def commitMsg = sh(
@@ -148,6 +145,13 @@ def call(Map config = [:]) {
 
                             env.JIRA_ID = ""
 
+                            if (env.CHANGE_ID) {
+                                updateJenkinsGitHubStatus(
+                                    'failure',
+                                    'Missing required Jira ID in commit message'
+                                )
+                            }
+
                             error(
                                 "Jira Ticket is mandatory. Commit message must " +
                                 "contain a valid Jira ID in the format KB-1234."
@@ -165,15 +169,11 @@ def call(Map config = [:]) {
             stage('SonarQube Analysis') {
 
                 steps {
-
                     script {
 
                         env.IS_PR_BUILD =
                             env.CHANGE_ID ? "true" : "false"
 
-                        /*
-                         * Perform Sonar PR validation only for PR builds.
-                         */
                         if (!env.CHANGE_ID) {
 
                             echo(
@@ -206,9 +206,6 @@ def call(Map config = [:]) {
 
                                 echo "Running Java tests changed in this PR"
 
-                                /*
-                                 * Fetch target branch.
-                                 */
                                 sh """
                                     git fetch origin \
                                       ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} \
@@ -224,13 +221,11 @@ def call(Map config = [:]) {
                                 """
 
                                 /*
-                                 * Detect Java unit-test files added or
-                                 * modified by this PR.
-                                 *
                                  * Supported:
-                                 *   *Test.java
-                                 *   *Tests.java
-                                 *   *TestCase.java
+                                 *
+                                 * *Test.java
+                                 * *Tests.java
+                                 * *TestCase.java
                                  */
                                 def changedJavaTestFiles = sh(
                                     script: """
@@ -244,16 +239,17 @@ def call(Map config = [:]) {
                                     returnStdout: true
                                 ).trim()
 
-                                /*
-                                 * Fail if PR contains no added/modified tests.
-                                 */
                                 if (!changedJavaTestFiles) {
+
+                                    updateJenkinsGitHubStatus(
+                                        'failure',
+                                        'No Java unit tests added or modified'
+                                    )
 
                                     error(
                                         "No Java unit test files were added or " +
-                                        "modified in this PR. " +
-                                        "Developer must add/update unit tests " +
-                                        "for the new code."
+                                        "modified in this PR. Developer must " +
+                                        "add/update unit tests for the new code."
                                     )
                                 }
 
@@ -295,8 +291,7 @@ def call(Map config = [:]) {
                                 echo "${javaTestClasses}"
 
                                 /*
-                                 * Run only Java tests modified/added
-                                 * by this PR.
+                                 * Run only changed Java tests.
                                  */
                                 def javaTestStatus = sh(
                                     script: """
@@ -319,6 +314,11 @@ def call(Map config = [:]) {
 
                                 if (javaTestStatus != 0) {
 
+                                    updateJenkinsGitHubStatus(
+                                        'failure',
+                                        'Java unit tests failed. Check Jenkins logs'
+                                    )
+
                                     error(
                                         "Java unit tests added/modified in " +
                                         "this PR failed. Developer needs to " +
@@ -330,16 +330,14 @@ def call(Map config = [:]) {
                                     "PR Java unit tests passed successfully"
                                 )
 
-                                /*
-                                 * Maven verify + JaCoCo + Sonar.
-                                 *
-                                 * Keep -Dtest so only selected PR test
-                                 * classes execute.
-                                 */
                                 echo(
                                     "Running Java/Maven SonarQube analysis"
                                 )
 
+                                /*
+                                 * -Dtest keeps Maven test execution restricted
+                                 * to the PR test classes.
+                                 */
                                 sh """
                                     export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
                                     export PATH="\$JAVA_HOME/bin:\$PATH"
@@ -357,8 +355,7 @@ def call(Map config = [:]) {
                                 """
 
                                 echo(
-                                    "Java SonarQube analysis " +
-                                    "completed successfully"
+                                    "Java SonarQube analysis completed successfully"
                                 )
 
                             /*
@@ -372,9 +369,6 @@ def call(Map config = [:]) {
                                     "Running Node.js tests changed in this PR"
                                 )
 
-                                /*
-                                 * Fetch target branch.
-                                 */
                                 sh """
                                     git fetch origin \
                                       ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} \
@@ -390,8 +384,8 @@ def call(Map config = [:]) {
                                 """
 
                                 /*
-                                 * Get only test files added or modified
-                                 * by this PR.
+                                 * Detect only test files added/modified
+                                 * in this PR.
                                  */
                                 def changedTestFiles = sh(
                                     script: """
@@ -405,17 +399,17 @@ def call(Map config = [:]) {
                                     returnStdout: true
                                 ).trim()
 
-                                /*
-                                 * Fail if developer has not added/modified
-                                 * test cases.
-                                 */
                                 if (!changedTestFiles) {
+
+                                    updateJenkinsGitHubStatus(
+                                        'failure',
+                                        'No Node.js unit tests added or modified'
+                                    )
 
                                     error(
                                         "No unit test files were added or " +
-                                        "modified in this PR. " +
-                                        "Developer must add/update unit tests " +
-                                        "for the new code."
+                                        "modified in this PR. Developer must " +
+                                        "add/update unit tests for the new code."
                                     )
                                 }
 
@@ -423,7 +417,7 @@ def call(Map config = [:]) {
                                 echo "${changedTestFiles}"
 
                                 /*
-                                 * Run only test files changed in this PR.
+                                 * Run only changed Node.js test files.
                                  */
                                 def testStatus = sh(
                                     script: """
@@ -453,6 +447,11 @@ def call(Map config = [:]) {
                                 )
 
                                 if (testStatus != 0) {
+
+                                    updateJenkinsGitHubStatus(
+                                        'failure',
+                                        'Node.js unit tests failed. Check Jenkins logs'
+                                    )
 
                                     error(
                                         "Unit tests added/modified in this PR " +
@@ -498,8 +497,7 @@ def call(Map config = [:]) {
                                 """
 
                                 echo(
-                                    "Node.js SonarQube analysis " +
-                                    "completed successfully"
+                                    "Node.js SonarQube analysis completed successfully"
                                 )
 
                             /*
@@ -507,17 +505,12 @@ def call(Map config = [:]) {
                              * PYTHON
                              * =================================================
                              */
-                            } else if (
-                                env.PROJECT_TYPE == "python"
-                            ) {
+                            } else if (env.PROJECT_TYPE == "python") {
 
                                 echo(
                                     "Running Python tests changed in this PR"
                                 )
 
-                                /*
-                                 * Fetch target branch.
-                                 */
                                 sh """
                                     git fetch origin \
                                       ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} \
@@ -533,11 +526,10 @@ def call(Map config = [:]) {
                                 """
 
                                 /*
-                                 * Detect Python test files added or modified.
-                                 *
                                  * Supported:
-                                 *   test_example.py
-                                 *   example_test.py
+                                 *
+                                 * test_example.py
+                                 * example_test.py
                                  */
                                 def changedPythonTestFiles = sh(
                                     script: """
@@ -551,10 +543,12 @@ def call(Map config = [:]) {
                                     returnStdout: true
                                 ).trim()
 
-                                /*
-                                 * Fail when PR contains no changed Python test.
-                                 */
                                 if (!changedPythonTestFiles) {
+
+                                    updateJenkinsGitHubStatus(
+                                        'failure',
+                                        'No Python unit tests added or modified'
+                                    )
 
                                     error(
                                         "No Python unit test files were added " +
@@ -568,8 +562,7 @@ def call(Map config = [:]) {
                                 echo "${changedPythonTestFiles}"
 
                                 /*
-                                 * Convert newline-separated filenames
-                                 * to individually shell-quoted arguments.
+                                 * Shell-quote individual pytest paths.
                                  */
                                 def pythonTestFiles =
                                     changedPythonTestFiles
@@ -591,10 +584,7 @@ def call(Map config = [:]) {
                                         .join(' ')
 
                                 /*
-                                 * Create isolated virtual environment.
-                                 *
-                                 * This prevents installing Python packages
-                                 * globally on the Jenkins host.
+                                 * Run Python tests in isolated venv.
                                  */
                                 def pythonTestStatus = sh(
                                     script: """
@@ -608,13 +598,13 @@ def call(Map config = [:]) {
 
                                         python -m pip install --upgrade pip
 
-                                        # Install application dependencies
+                                        # Application dependencies
                                         if [ -f requirements.txt ]; then
                                             python -m pip install \
                                               -r requirements.txt
                                         fi
 
-                                        # Install project-specific test dependencies
+                                        # Project test dependencies
                                         if [ -f requirements-test.txt ]; then
                                             python -m pip install \
                                               -r requirements-test.txt
@@ -623,7 +613,7 @@ def call(Map config = [:]) {
                                               -r requirements-dev.txt
                                         fi
 
-                                        # Guarantee Jenkins-required test tools
+                                        # Jenkins-required testing tools
                                         python -m pip install pytest coverage
 
                                         coverage erase
@@ -651,6 +641,11 @@ def call(Map config = [:]) {
 
                                 if (pythonTestStatus != 0) {
 
+                                    updateJenkinsGitHubStatus(
+                                        'failure',
+                                        'Python unit tests failed. Check Jenkins logs'
+                                    )
+
                                     error(
                                         "Python unit tests added/modified " +
                                         "in this PR failed. Developer needs " +
@@ -663,7 +658,7 @@ def call(Map config = [:]) {
                                 )
 
                                 /*
-                                 * Validate coverage before starting Sonar.
+                                 * Coverage must exist before Sonar.
                                  */
                                 sh """
                                     test -f coverage.xml
@@ -704,13 +699,12 @@ def call(Map config = [:]) {
                                 """
 
                                 echo(
-                                    "Python SonarQube analysis " +
-                                    "completed successfully"
+                                    "Python SonarQube analysis completed successfully"
                                 )
 
                             /*
                              * =================================================
-                             * GENERIC / UNKNOWN
+                             * GENERIC
                              * =================================================
                              */
                             } else {
@@ -743,9 +737,7 @@ def call(Map config = [:]) {
 
                                 sh """
                                     echo "Checking report-task.txt"
-
                                     ls -ltr report-task.txt || true
-
                                     cat report-task.txt || true
                                 """
                             }
@@ -798,10 +790,10 @@ def call(Map config = [:]) {
                                 .replace('.git', '')
 
                             /*
-                             * SonarQube Details link.
+                             * Sonar remains separate from Jenkins.
                              *
-                             * Jenkins status uses BUILD_URL.
-                             * Sonar status uses this URL.
+                             * Jenkins Details -> Jenkins
+                             * Sonar Details   -> SonarQube
                              */
                             def sonarDashboardUrl =
                                 "https://dev.karmayogibharat.net/codeanalysis/dashboard" +
@@ -816,12 +808,8 @@ def call(Map config = [:]) {
                             def githubDescription =
                                 qg.status == 'OK' ?
                                     'SonarQube Quality Gate Passed' :
-                                    "SonarQube Quality Gate Failed: " +
-                                    "${qg.status}"
+                                    "SonarQube Quality Gate Failed: ${qg.status}"
 
-                            /*
-                             * Send independent Sonar GitHub status.
-                             */
                             withCredentials([
                                 usernamePassword(
                                     credentialsId: 'github-cred',
@@ -865,7 +853,7 @@ def call(Map config = [:]) {
 
         /*
          * -------------------------------------------------------------
-         * Final Pipeline Status
+         * Final Jenkins Status
          * -------------------------------------------------------------
          */
         post {
@@ -878,15 +866,12 @@ def call(Map config = [:]) {
 
                         updateJenkinsGitHubStatus(
                             'success',
-                            'Jenkins PR Validation Passed'
+                            'Jenkins PR validation passed'
                         )
                     }
 
                     echo "PR Validation Successful"
-
-                    echo(
-                        "Manager can now review and merge the PR."
-                    )
+                    echo "Manager can now review and merge the PR."
                 }
             }
 
@@ -894,11 +879,26 @@ def call(Map config = [:]) {
 
                 script {
 
+                    /*
+                     * Do not try to determine the detailed error here.
+                     *
+                     * Specific failures above already report:
+                     *
+                     * - Missing Jira ID
+                     * - No Node tests
+                     * - Node tests failed
+                     * - No Java tests
+                     * - Java tests failed
+                     * - No Python tests
+                     * - Python tests failed
+                     *
+                     * This is only a fallback/final failure status.
+                     */
                     if (env.CHANGE_ID) {
 
                         updateJenkinsGitHubStatus(
                             'failure',
-                            'Jenkins PR Validation Failed'
+                            'Jenkins PR validation failed. Check build logs'
                         )
                     }
 
