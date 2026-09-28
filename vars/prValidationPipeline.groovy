@@ -128,16 +128,15 @@ def call(Map config = [:]) {
                 steps {
                     script {
 
-                        def commitMsg = sh(
-                            script: "git log -1 --pretty=%B",
-                            returnStdout: true
-                        ).trim()
+                        def commitMsg = env.CHANGE_TITLE ?: ""
 
-                        def matcher = (commitMsg =~ /(KB-\d+)/)
+                        echo "PR Title: ${commitMsg}"
 
-                        if (matcher.find()) {
+                        def jiraMatch = commitMsg.find(/KB-\d+/)
 
-                            env.JIRA_ID = matcher.group(1)
+                        if (jiraMatch) {
+
+                            env.JIRA_ID = jiraMatch
 
                             echo "Jira Ticket Found: ${env.JIRA_ID}"
 
@@ -153,8 +152,7 @@ def call(Map config = [:]) {
                             }
 
                             error(
-                                "Jira Ticket is mandatory. Commit message must " +
-                                "contain a valid Jira ID in the format KB-1234."
+                                "PR title must contain a Jira ID. Example: KB-12345 Fix login issue"
                             )
                         }
                     }
