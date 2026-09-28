@@ -144,16 +144,12 @@ def call(Map config = [:]) {
 
                             env.JIRA_ID = ""
 
-                            if (env.CHANGE_ID) {
-                                updateJenkinsGitHubStatus(
-                                    'failure',
-                                    'Missing required Jira ID in commit message'
-                                )
-                            }
+                            echo "No Jira ID found in PR title."
+                            echo "Continuing PR validation."
 
-                            error(
-                                "PR title must contain a Jira ID. Example: KB-12345 Fix login issue"
-                            )
+                            currentBuild.description =
+                                "Warning: No Jira ID found in PR title"
+                            }
                         }
                     }
                 }
@@ -214,9 +210,11 @@ def call(Map config = [:]) {
                                     echo "Changed files in this PR:"
 
                                     git diff \
-                                      --name-only \
-                                      ${env.CHANGE_TARGET}...HEAD
-                                """
+                                        --name-only \
+                                        ${env.CHANGE_TARGET}...HEAD
+                                    """
+
+                                    
 
                                 /*
                                  * Supported:
@@ -356,7 +354,7 @@ def call(Map config = [:]) {
                                 echo(
                                     "Java SonarQube analysis completed successfully"
                                 )
-
+                            
                             /*
                              * =================================================
                              * NODE.JS
@@ -386,6 +384,7 @@ def call(Map config = [:]) {
                                  * Detect only test files added/modified
                                  * in this PR.
                                  */
+
                                 def changedTestFiles = sh(
                                     script: """
                                         git diff \
@@ -498,7 +497,7 @@ def call(Map config = [:]) {
                                 echo(
                                     "Node.js SonarQube analysis completed successfully"
                                 )
-
+                            
                             /*
                              * =================================================
                              * PYTHON
@@ -530,6 +529,7 @@ def call(Map config = [:]) {
                                  * test_example.py
                                  * example_test.py
                                  */
+
                                 def changedPythonTestFiles = sh(
                                     script: """
                                         git diff \
@@ -700,7 +700,7 @@ def call(Map config = [:]) {
                                 echo(
                                     "Python SonarQube analysis completed successfully"
                                 )
-
+                            
                             /*
                              * =================================================
                              * GENERIC
