@@ -2,29 +2,70 @@ def call(Map config = [:]) {
 
     /*
      * ---------------------------------------------------------
-     * Update existing Jenkins PR status on GitHub
+     * Constants
      * ---------------------------------------------------------
      *
-     * Uses the existing required GitHub status context:
-     *
-     * continuous-integration/jenkins/pr-head
-     *
-     * Details -> Jenkins BUILD_URL
+     * Test-file patterns (Groovy regex, matched against the full path)
      */
-    def updateJenkinsGitHubStatus = { String state, String description ->
+    def JAVA_TEST_PATTERN   = '(?:.*/)?src/test/java/.*(?:Test|Tests|TestCase)\\.java'
+    def NODE_TEST_PATTERN   = '.*\\.(?:spec|test)\\.(?:ts|tsx|js|jsx)'
+    def PYTHON_TEST_PATTERN = '(?:.*/)?(?:test_[^/]+|[^/]+_test)\\.py'
 
-        // GitHub limit is 140 chars; strip chars that would break the JSON/shell quoting
+    /*
+     * Shared cache directories on the Jenkins agent.
+     * They survive between builds and are what makes reruns fast.
+     */
+    def SONAR_CACHE = '/opt/sonar-cache'
+    def JEST_CACHE  = '/opt/jest-cache'
+    def YARN_CACHE  = '/opt/yarn-cache'
+    def PIP_CACHE   = '/opt/pip-cache'
+
+    /*
+     * Data collected during the run and rendered into the PR comment.
+     */
+    def report = [
+        jira       : '',
+        projectType: 'unknown',
+        testFiles  : [],
+        testResult : 'not run',
+        sonarResult: 'not run',
+        sonarUrl   : ''
+    ]
+
+    /*
+     * ---------------------------------------------------------
+     * Helpers
+     * ---------------------------------------------------------
+     */
+
+    // KB-iGOT/<repo> name from GIT_URL
+    def getRepoName = {
+        env.GIT_URL
+            .tokenize('/')
+            .last()
+            .replace('.git', '')
+    }
+
+    // Safe single-quoting for shell arguments
+    def shellQuote = { String value ->
+        "'" + value.replace("'", "'\"'\"'") + "'"
+    }
+
+    /*
+     * Generic GitHub commit status.
+     * Descriptions are sanitized (GitHub limit is 140 chars, and quotes /
+     * newlines would break the JSON payload).
+     */
+    def postGitHubStatus = { String context, String state, String description, String targetUrl ->
+
         def safeDescription = (description ?: '')
             .replaceAll(/["'\\\r\n]+/, ' ')
             .take(140)
 
-        def repoName = env.GIT_URL
-            .tokenize('/')
-            .last()
-            .replace('.git', '')
+        def repoName = getRepoName()
 
-        echo "Updating Jenkins GitHub status: ${state}"
-        echo "Jenkins status message: ${safeDescription}"
+        echo "Updating GitHub status [${context}]: ${state}"
+        echo "Status message: ${safeDescription}"
 
         withCredentials([
             usernamePassword(
@@ -42,24 +83,27 @@ def call(Map config = [:]) {
                   "https://api.github.com/repos/KB-iGOT/${repoName}/statuses/${env.GIT_COMMIT}" \
                   --data '{
                     "state": "${state}",
-                    "target_url": "${env.BUILD_URL}",
+                    "target_url": "${targetUrl}",
                     "description": "${safeDescription}",
-                    "context": "continuous-integration/jenkins/pr-head"
+                    "context": "${context}"
                   }'
             """
         }
     }
 
+    // Jenkins context: continuous-integration/jenkins/pr-head -> BUILD_URL
+    def updateJenkinsGitHubStatus = { String state, String description ->
+        postGitHubStatus(
+            'continuous-integration/jenkins/pr-head',
+            state,
+            description,
+            env.BUILD_URL
+        )
+    }
+
     /*
-     * ---------------------------------------------------------
-     * Fail the PR with a specific reason
-     * ---------------------------------------------------------
-     *
-     * 1. Remembers the reason in env.PR_FAILURE_REASON so the
-     *    post { failure } block re-posts the SAME message instead
-     *    of overwriting it with the generic one.
-     * 2. Posts the failure status to GitHub immediately.
-     * 3. Fails the build.
+     * Fail the PR with a specific reason:
+     * remembers it (post blocks re-use it), posts it, fails the build.
      */
     def failPR = { String githubMessage, String errorMessage ->
         env.PR_FAILURE_REASON = githubMessage
@@ -67,9 +111,279 @@ def call(Map config = [:]) {
         error(errorMessage)
     }
 
+    /*
+     * Close out sonarqube/quality-gate so the PR never shows it as
+     * "expected - waiting". No-op if Quality Gate already posted the result.
+     */
+    def closeOutSonarStatus = { String state, String description ->
+        if (env.CHANGE_ID && env.SONAR_STATUS_POSTED != 'true') {
+            postGitHubStatus(
+                'sonarqube/quality-gate',
+                state,
+                description,
+                env.BUILD_URL
+            )
+        }
+    }
+
+    /*
+     * Fetch the PR target branch and log the changed files.
+     * Fails clearly if the fetch fails (no silent diff against a stale ref).
+     */
+    def fetchTargetAndListChanges = {
+        def fetchStatus = sh(
+            script: """
+                git fetch origin +refs/heads/${env.CHANGE_TARGET}:refs/remotes/origin/${env.CHANGE_TARGET}
+            """,
+            returnStatus: true
+        )
+
+        if (fetchStatus != 0) {
+            failPR(
+                "Could not fetch target branch ${env.CHANGE_TARGET} for PR diff. Check Jenkins logs",
+                "git fetch of origin/${env.CHANGE_TARGET} failed with exit code ${fetchStatus}"
+            )
+        }
+
+        sh """
+            echo "PR Target Branch: ${env.CHANGE_TARGET}"
+
+            echo "Changed files in this PR:"
+
+            git diff --name-only origin/${env.CHANGE_TARGET}...HEAD
+        """
+    }
+
+    /*
+     * Return the test files added/modified in this PR (matching `pattern`).
+     * Fails the PR if there are none.
+     */
+    def requireChangedTests = { String label, String pattern ->
+
+        fetchTargetAndListChanges()
+
+        def changed = sh(
+            script: "git diff --name-only --diff-filter=AM origin/${env.CHANGE_TARGET}...HEAD",
+            returnStdout: true
+        ).trim()
+
+        def testFiles = []
+
+        if (changed) {
+            for (f in changed.split('\n')) {
+                def path = f.trim()
+                if (path && (path ==~ pattern)) {
+                    testFiles << path
+                }
+            }
+        }
+
+        report.testFiles = testFiles
+
+        if (!testFiles) {
+            report.testResult = 'no unit tests added or modified'
+            failPR(
+                "No ${label} unit tests added or modified in this PR",
+                "No ${label} unit test files were added or modified in this PR. " +
+                "Developer must add/update unit tests for the new code."
+            )
+        }
+
+        echo "${label} test files changed in this PR:"
+        echo "${testFiles.join('\n')}"
+
+        return testFiles
+    }
+
+    /*
+     * Evaluate a test run's exit status.
+     */
+    def checkTestResult = { String label, int status ->
+
+        echo "Changed ${label} test files status: ${status}"
+
+        if (status != 0) {
+            report.testResult = 'failed'
+            failPR(
+                "${label} unit tests failed. Check Jenkins logs",
+                "${label} unit tests added/modified in this PR failed. " +
+                "Developer needs to fix the affected tests/code."
+            )
+        }
+
+        report.testResult = 'passed'
+        echo "PR ${label} unit tests passed successfully"
+    }
+
+    /*
+     * Run sonar-scanner with the arguments common to Node / Python / generic
+     * projects, plus per-language `extraArgs`.
+     * Must be called inside withSonarQubeEnv (uses SONAR_HOST_URL / SONAR_AUTH_TOKEN).
+     */
+    def runSonarScanner = { List extraArgs ->
+
+        def scannerHome = tool 'sonar-scanner'
+        def repoName    = getRepoName()
+        def extra       = extraArgs.join(" \\\n  ")
+
+        sh """
+            rm -rf .scannerwork || true
+            mkdir -p .scannerwork ${SONAR_CACHE} || true
+
+            export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
+            export PATH=\$JAVA_HOME/bin:\$PATH
+
+            java -version
+
+            ${scannerHome}/bin/sonar-scanner \
+              -Dsonar.scanner.skipJreProvisioning=true \
+              -Dsonar.host.url="\$SONAR_HOST_URL" \
+              -Dsonar.token="\$SONAR_AUTH_TOKEN" \
+              -Dsonar.projectKey="${repoName}" \
+              -Dsonar.userHome=${SONAR_CACHE} \
+              -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
+              -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
+              -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
+              ${extra}
+        """
+    }
+
+    /*
+     * Create/update a single "sticky" summary comment on the PR.
+     * Never fails the build: any error is logged as a warning.
+     */
+    def postPRComment = { String overall ->
+
+        if (!env.CHANGE_ID) {
+            return
+        }
+
+        try {
+
+            def marker   = '<!-- jenkins-pr-validation -->'
+            def repoName = getRepoName()
+
+            def overallText = [
+                SUCCESS : '✅ PASSED',
+                FAILURE : '❌ FAILED',
+                UNSTABLE: '⚠️ UNSTABLE',
+                ABORTED : '⏹ ABORTED'
+            ][overall] ?: overall
+
+            def jiraText = report.jira ?
+                "`${report.jira}`" :
+                '⚠️ Not found in PR title (not blocking)'
+
+            def lines = []
+            lines << marker
+            lines << "### Jenkins PR validation: ${overallText}"
+            lines << ''
+            lines << '| Check | Result |'
+            lines << '|---|---|'
+            lines << "| Jira ID | ${jiraText} |"
+            lines << "| Project type | ${report.projectType} |"
+            lines << "| Unit test files changed | ${report.testFiles.size()} |"
+            lines << "| Unit tests | ${report.testResult} |"
+            lines << "| SonarQube Quality Gate | ${report.sonarResult} |"
+            lines << ''
+
+            if (env.PR_FAILURE_REASON) {
+                lines << "**Reason:** ${env.PR_FAILURE_REASON}"
+                lines << ''
+            }
+
+            if (report.testFiles) {
+                lines << '<details><summary>Unit test files in this PR</summary>'
+                lines << ''
+                for (f in report.testFiles) {
+                    lines << "- `${f}`"
+                }
+                lines << ''
+                lines << '</details>'
+                lines << ''
+            }
+
+            def links = "[Jenkins build](${env.BUILD_URL}) | [Console log](${env.BUILD_URL}console)"
+            if (report.sonarUrl) {
+                links += " | [SonarQube analysis](${report.sonarUrl})"
+            }
+            lines << links
+            lines << ''
+            lines << "_Commit ${(env.GIT_COMMIT ?: '').take(7)}_"
+
+            def payload = groovy.json.JsonOutput.toJson([body: lines.join('\n')])
+            writeFile file: '.pr-comment.json', text: payload
+
+            withCredentials([
+                usernamePassword(
+                    credentialsId: 'github-cred',
+                    usernameVariable: 'GITHUB_USER',
+                    passwordVariable: 'GITHUB_TOKEN'
+                )
+            ]) {
+
+                def existing = sh(
+                    script: """
+                        curl -sS --fail-with-body \
+                          --header "Accept: application/vnd.github+json" \
+                          --header "Authorization: Bearer \$GITHUB_TOKEN" \
+                          --header "X-GitHub-Api-Version: 2022-11-28" \
+                          "https://api.github.com/repos/KB-iGOT/${repoName}/issues/${env.CHANGE_ID}/comments?per_page=100"
+                    """,
+                    returnStdout: true
+                ).trim()
+
+                def commentId = null
+
+                if (existing) {
+                    def comments = new groovy.json.JsonSlurperClassic().parseText(existing)
+                    for (c in comments) {
+                        if (c.body?.contains(marker)) {
+                            commentId = c.id
+                            break
+                        }
+                    }
+                }
+
+                def method = commentId ? 'PATCH' : 'POST'
+                def url    = commentId ?
+                    "https://api.github.com/repos/KB-iGOT/${repoName}/issues/comments/${commentId}" :
+                    "https://api.github.com/repos/KB-iGOT/${repoName}/issues/${env.CHANGE_ID}/comments"
+
+                sh """
+                    curl -sS --fail-with-body --output /dev/null \
+                      --request ${method} \
+                      --header "Accept: application/vnd.github+json" \
+                      --header "Authorization: Bearer \$GITHUB_TOKEN" \
+                      --header "X-GitHub-Api-Version: 2022-11-28" \
+                      --header "Content-Type: application/json" \
+                      --data @.pr-comment.json \
+                      "${url}"
+                """
+            }
+
+        } catch (err) {
+
+            echo "WARNING: could not post PR comment: ${err.getMessage()}"
+        }
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * Pipeline
+     * ---------------------------------------------------------
+     */
     pipeline {
 
         agent any
+
+        options {
+            // Hung docker/mvn/scanner runs must not hold the agent forever
+            timeout(time: 45, unit: 'MINUTES')
+            timestamps()
+            // A new push to the PR cancels the older build for that PR
+            disableConcurrentBuilds(abortPrevious: true)
+        }
 
         environment {
             SONARQUBE_ENV = "sonarqube"
@@ -134,6 +448,8 @@ def call(Map config = [:]) {
                             env.PROJECT_TYPE = "unknown"
                         }
 
+                        report.projectType = env.PROJECT_TYPE
+
                         echo "Detected Project Type: ${env.PROJECT_TYPE}"
                     }
                 }
@@ -141,7 +457,7 @@ def call(Map config = [:]) {
 
             /*
              * ---------------------------------------------------------
-             * Extract Jira Ticket
+             * Extract Jira Ticket  (informational only - never blocks)
              * ---------------------------------------------------------
              */
             stage('Extract Jira Ticket') {
@@ -158,25 +474,20 @@ def call(Map config = [:]) {
                         if (jiraMatch) {
 
                             env.JIRA_ID = jiraMatch
+                            report.jira = jiraMatch
 
                             echo "Jira Ticket Found: ${env.JIRA_ID}"
 
                         } else {
 
                             env.JIRA_ID = ""
+                            report.jira = ""
 
                             echo "No Jira ID found in PR title."
                             echo "Continuing PR validation."
 
                             currentBuild.description =
                                 "Warning: No Jira ID found in PR title"
-
-                            // To make a missing Jira ID BLOCK the merge, replace the
-                            // lines above with:
-                            // failPR(
-                            //     'Missing Jira ID (KB-xxxx) in PR title',
-                            //     'No Jira ID found in PR title.'
-                            // )
                         }
                     }
                 }
@@ -205,10 +516,7 @@ def call(Map config = [:]) {
                             return
                         }
 
-                        def repoName = env.GIT_URL
-                            .tokenize('/')
-                            .last()
-                            .replace('.git', '')
+                        def repoName = getRepoName()
 
                         echo "Running SonarQube PR analysis"
                         echo "Repository: ${repoName}"
@@ -217,9 +525,8 @@ def call(Map config = [:]) {
                         echo "Target Branch: ${env.CHANGE_TARGET}"
 
                         /*
-                         * Catch-all: any unexpected failure in this stage
-                         * (docker crash, mvn error, scanner error, etc.)
-                         * still gets a meaningful GitHub message.
+                         * Catch-all: unexpected failures (docker, mvn, scanner,
+                         * network) still get a meaningful GitHub message.
                          * A reason already set by failPR is never overwritten.
                          */
                         try {
@@ -227,376 +534,154 @@ def call(Map config = [:]) {
                             withSonarQubeEnv("${SONARQUBE_ENV}") {
 
                                 /*
-                                 * =================================================
+                                 * =============================================
                                  * JAVA
-                                 * =================================================
+                                 * =============================================
                                  */
                                 if (env.PROJECT_TYPE == "java") {
 
-                                    echo "Running Java tests changed in this PR"
-
-                                    sh """
-                                        git fetch origin \
-                                          ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} \
-                                          || true
-
-                                        echo "PR Target Branch: ${env.CHANGE_TARGET}"
-
-                                        echo "Changed files in this PR:"
-
-                                        git diff \
-                                          --name-only \
-                                          ${env.CHANGE_TARGET}...HEAD
-                                    """
+                                    def testFiles = requireChangedTests('Java', JAVA_TEST_PATTERN)
 
                                     /*
-                                     * Supported:
-                                     *
-                                     * *Test.java
-                                     * *Tests.java
-                                     * *TestCase.java
-                                     */
-                                    def changedJavaTestFiles = sh(
-                                        script: """
-                                            git diff \
-                                              --name-only \
-                                              --diff-filter=AM \
-                                              ${env.CHANGE_TARGET}...HEAD \
-                                            | grep -E '(^|/)src/test/java/.*(Test|Tests|TestCase)\\.java\$' \
-                                            || true
-                                        """,
-                                        returnStdout: true
-                                    ).trim()
-
-                                    if (!changedJavaTestFiles) {
-
-                                        failPR(
-                                            'No Java unit tests added or modified in this PR',
-                                            "No Java unit test files were added or " +
-                                            "modified in this PR. Developer must " +
-                                            "add/update unit tests for the new code."
-                                        )
-                                    }
-
-                                    echo "Java test files changed in this PR:"
-                                    echo "${changedJavaTestFiles}"
-
-                                    /*
-                                     * Convert:
-                                     *
                                      * src/test/java/com/example/UserServiceTest.java
-                                     *
-                                     * to:
-                                     *
-                                     * com.example.UserServiceTest
+                                     *   -> com.example.UserServiceTest
                                      */
-                                    def javaTestClasses = changedJavaTestFiles
-                                        .split('\n')
+                                    def javaTestClasses = testFiles
                                         .collect {
-                                            it.trim()
-                                                .replaceFirst(
-                                                    '^.*?src/test/java/',
-                                                    ''
-                                                )
-                                                .replaceFirst(
-                                                    '\\.java$',
-                                                    ''
-                                                )
-                                                .replace(
-                                                    '/',
-                                                    '.'
-                                                )
-                                        }
-                                        .findAll {
-                                            it
+                                            it.replaceFirst('^.*?src/test/java/', '')
+                                              .replaceFirst('\\.java$', '')
+                                              .replace('/', '.')
                                         }
                                         .join(',')
 
-                                    echo "Java tests selected for execution:"
-                                    echo "${javaTestClasses}"
+                                    echo "Java tests selected for execution: ${javaTestClasses}"
 
                                     /*
-                                     * Run only changed Java tests.
+                                     * Single Maven run: compile + only the PR's
+                                     * tests + jacoco report. Sonar then reuses
+                                     * target/ instead of re-running the tests.
                                      */
-                                    def javaTestStatus = sh(
+                                    def mavenStatus = sh(
                                         script: """
                                             export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
                                             export PATH="\$JAVA_HOME/bin:\$PATH"
 
                                             java -version
 
-                                            /var/lib/jenkins/apache-maven-3.8.8/bin/mvn \
-                                              clean test \
-                                              -Dtest="${javaTestClasses}"
+                                            /var/lib/jenkins/apache-maven-3.8.8/bin/mvn -B -ntp \
+                                              clean verify \
+                                              -Dtest="${javaTestClasses}" \
+                                              -Djacoco.haltOnFailure=false
                                         """,
                                         returnStatus: true
                                     )
 
-                                    echo(
-                                        "Changed Java test files status: " +
-                                        "${javaTestStatus}"
-                                    )
+                                    checkTestResult('Java', mavenStatus)
 
-                                    if (javaTestStatus != 0) {
+                                    echo "Running Java/Maven SonarQube analysis"
 
-                                        failPR(
-                                            'Java unit tests failed. Check Jenkins logs',
-                                            "Java unit tests added/modified in " +
-                                            "this PR failed. Developer needs to " +
-                                            "fix the affected tests/code."
-                                        )
-                                    }
-
-                                    echo(
-                                        "PR Java unit tests passed successfully"
-                                    )
-
-                                    echo(
-                                        "Running Java/Maven SonarQube analysis"
-                                    )
-
-                                    /*
-                                     * -Dtest keeps Maven test execution restricted
-                                     * to the PR test classes.
-                                     */
                                     sh """
                                         export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
                                         export PATH="\$JAVA_HOME/bin:\$PATH"
 
-                                        /var/lib/jenkins/apache-maven-3.8.8/bin/mvn \
-                                          verify sonar:sonar \
-                                          -Dtest="${javaTestClasses}" \
-                                          -Djacoco.haltOnFailure=false \
-                                          -Dsonar.host.url="${SONAR_HOST_URL}" \
-                                          -Dsonar.token="${SONAR_AUTH_TOKEN}" \
+                                        mkdir -p ${SONAR_CACHE} || true
+
+                                        /var/lib/jenkins/apache-maven-3.8.8/bin/mvn -B -ntp \
+                                          sonar:sonar \
+                                          -Dsonar.host.url="\$SONAR_HOST_URL" \
+                                          -Dsonar.token="\$SONAR_AUTH_TOKEN" \
                                           -Dsonar.projectKey="${repoName}" \
+                                          -Dsonar.userHome=${SONAR_CACHE} \
                                           -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
                                           -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
                                           -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
                                           -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
                                     """
 
-                                    echo(
-                                        "Java SonarQube analysis completed successfully"
-                                    )
-
                                 /*
-                                 * =================================================
+                                 * =============================================
                                  * NODE.JS
-                                 * =================================================
+                                 * =============================================
                                  */
                                 } else if (env.PROJECT_TYPE == "node") {
 
-                                    echo(
-                                        "Running Node.js tests changed in this PR"
+                                    def testFiles = requireChangedTests('Node.js', NODE_TEST_PATTERN)
+
+                                    // One path per line; read by xargs inside the container
+                                    // (safe for spaces/quotes in file names)
+                                    writeFile(
+                                        file: '.pr-test-files.txt',
+                                        text: testFiles.join('\n') + '\n'
                                     )
 
-                                    sh """
-                                        git fetch origin \
-                                          ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} \
-                                          || true
-
-                                        echo "PR Target Branch: ${env.CHANGE_TARGET}"
-
-                                        echo "Changed files in this PR:"
-
-                                        git diff \
-                                          --name-only \
-                                          ${env.CHANGE_TARGET}...HEAD
-                                    """
-
                                     /*
-                                     * Detect only test files added/modified
-                                     * in this PR.
-                                     */
-                                    def changedTestFiles = sh(
-                                        script: """
-                                            git diff \
-                                              --name-only \
-                                              --diff-filter=AM \
-                                              ${env.CHANGE_TARGET}...HEAD \
-                                            | grep -E '\\.(spec|test)\\.(ts|tsx|js|jsx)\$' \
-                                            || true
-                                        """,
-                                        returnStdout: true
-                                    ).trim()
-
-                                    if (!changedTestFiles) {
-
-                                        failPR(
-                                            'No Node.js unit tests added or modified in this PR',
-                                            "No unit test files were added or " +
-                                            "modified in this PR. Developer must " +
-                                            "add/update unit tests for the new code."
-                                        )
-                                    }
-
-                                    echo "Test files changed in this PR:"
-                                    echo "${changedTestFiles}"
-
-                                    /*
-                                     * Run only changed Node.js test files.
+                                     * yarn + jest caches are mounted from the agent,
+                                     * so reruns skip re-downloading packages.
                                      */
                                     def testStatus = sh(
                                         script: """
+                                            mkdir -p ${JEST_CACHE} ${YARN_CACHE} 2>/dev/null || true
+
                                             docker run --rm \
                                               -v "\$(pwd):/usr/src" \
-                                              -v /opt/jest-cache:/tmp/jest-cache \
+                                              -v ${JEST_CACHE}:/tmp/jest-cache \
+                                              -v ${YARN_CACHE}:/tmp/yarn-cache \
+                                              -e YARN_CACHE_FOLDER=/tmp/yarn-cache \
                                               node:22 \
                                               sh -c '
                                                   cd /usr/src &&
 
                                                   yarn install --prefer-offline &&
 
-                                                  ./node_modules/.bin/jest \
-                                                    --runTestsByPath ${changedTestFiles} \
+                                                  xargs -d "\\n" ./node_modules/.bin/jest \
                                                     --ci \
                                                     --coverage \
                                                     --coverageReporters=lcov \
+                                                    --cacheDirectory=/tmp/jest-cache \
                                                     --detectOpenHandles \
-                                                    --forceExit
+                                                    --forceExit \
+                                                    --runTestsByPath < .pr-test-files.txt
                                               '
                                         """,
                                         returnStatus: true
                                     )
 
-                                    echo(
-                                        "Changed test files status: ${testStatus}"
-                                    )
+                                    checkTestResult('Node.js', testStatus)
 
-                                    if (testStatus != 0) {
+                                    echo "Running Node.js SonarQube analysis"
 
-                                        failPR(
-                                            'Node.js unit tests failed. Check Jenkins logs',
-                                            "Unit tests added/modified in this PR " +
-                                            "failed. Developer needs to fix the " +
-                                            "affected tests/code."
-                                        )
-                                    }
-
-                                    echo(
-                                        "PR unit tests passed successfully"
-                                    )
-
-                                    echo(
-                                        "Running Node.js SonarQube analysis"
-                                    )
-
-                                    def scannerHome = tool 'sonar-scanner'
-
-                                    sh """
-                                        rm -rf .scannerwork || true
-                                        mkdir -p .scannerwork
-
-                                        export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
-                                        export PATH=\$JAVA_HOME/bin:\$PATH
-
-                                        java -version
-
-                                        ${scannerHome}/bin/sonar-scanner \
-                                          -Dsonar.scanner.skipJreProvisioning=true \
-                                          -Dsonar.host.url="${SONAR_HOST_URL}" \
-                                          -Dsonar.token="${SONAR_AUTH_TOKEN}" \
-                                          -Dsonar.projectKey="${repoName}" \
-                                          -Dsonar.sources=src \
-                                          -Dsonar.tests=. \
-                                          -Dsonar.userHome=/opt/sonar-cache \
-                                          -Dsonar.verbose=true \
-                                          -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
-                                          -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
-                                          -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
-                                          -Dsonar.test.inclusions="**/*.spec.ts,**/*.test.ts,**/*.spec.tsx,**/*.test.tsx,**/*.spec.js,**/*.test.js,**/*.spec.jsx,**/*.test.jsx" \
-                                          -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
-                                          -Dsonar.exclusions="**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*.interface.ts,**/*.enum.ts,**/*.routing.ts,**/*.routes.ts,**/*.spec.ts,**/*.test.ts,**/*.spec.tsx,**/*.test.tsx,**/*.spec.js,**/*.test.js,**/*.spec.jsx,**/*.test.jsx,**/*.mock.ts,**/*.stub.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,**/assets/**,**/mdo-assets/**,**/themes/**,**/styles/**,**/coverage/**,**/dist/**,**/.angular/**,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js"
-                                    """
-
-                                    echo(
-                                        "Node.js SonarQube analysis completed successfully"
-                                    )
+                                    runSonarScanner([
+                                        '-Dsonar.sources=src',
+                                        '-Dsonar.tests=.',
+                                        '-Dsonar.verbose=true',
+                                        '-Dsonar.test.inclusions="**/*.spec.ts,**/*.test.ts,**/*.spec.tsx,**/*.test.tsx,**/*.spec.js,**/*.test.js,**/*.spec.jsx,**/*.test.jsx"',
+                                        '-Dsonar.typescript.lcov.reportPaths=coverage/lcov.info',
+                                        '-Dsonar.exclusions="**/node_modules/**,**/*.module.ts,**/*.model.ts,**/*.interface.ts,**/*.enum.ts,**/*.routing.ts,**/*.routes.ts,**/*.spec.ts,**/*.test.ts,**/*.spec.tsx,**/*.test.tsx,**/*.spec.js,**/*.test.js,**/*.spec.jsx,**/*.test.jsx,**/*.mock.ts,**/*.stub.ts,**/*setup-jest.ts,**/*main.ts,**/*environment.*.ts,**/*test.ts,**/assets/**,**/mdo-assets/**,**/themes/**,**/styles/**,**/coverage/**,**/dist/**,**/.angular/**,protractor.conf.js,babel.config.js,jest.config.js,jest.env.js,test/mocks/*.*,karma.conf.js"'
+                                    ])
 
                                 /*
-                                 * =================================================
+                                 * =============================================
                                  * PYTHON
-                                 * =================================================
+                                 * =============================================
                                  */
                                 } else if (env.PROJECT_TYPE == "python") {
 
-                                    echo(
-                                        "Running Python tests changed in this PR"
-                                    )
+                                    def testFiles = requireChangedTests('Python', PYTHON_TEST_PATTERN)
 
-                                    sh """
-                                        git fetch origin \
-                                          ${env.CHANGE_TARGET}:${env.CHANGE_TARGET} \
-                                          || true
-
-                                        echo "PR Target Branch: ${env.CHANGE_TARGET}"
-
-                                        echo "Changed files in this PR:"
-
-                                        git diff \
-                                          --name-only \
-                                          ${env.CHANGE_TARGET}...HEAD
-                                    """
-
-                                    /*
-                                     * Supported:
-                                     *
-                                     * test_example.py
-                                     * example_test.py
-                                     */
-                                    def changedPythonTestFiles = sh(
-                                        script: """
-                                            git diff \
-                                              --name-only \
-                                              --diff-filter=AM \
-                                              ${env.CHANGE_TARGET}...HEAD \
-                                            | grep -E '(^|/)(test_[^/]+|[^/]+_test)\\.py\$' \
-                                            || true
-                                        """,
-                                        returnStdout: true
-                                    ).trim()
-
-                                    if (!changedPythonTestFiles) {
-
-                                        failPR(
-                                            'No Python unit tests added or modified in this PR',
-                                            "No Python unit test files were added " +
-                                            "or modified in this PR. Developer " +
-                                            "must add/update unit tests for the " +
-                                            "new code."
-                                        )
-                                    }
-
-                                    echo "Python test files changed in this PR:"
-                                    echo "${changedPythonTestFiles}"
-
-                                    /*
-                                     * Shell-quote individual pytest paths.
-                                     */
-                                    def pythonTestFiles = changedPythonTestFiles
-                                        .split('\n')
-                                        .collect {
-                                            it.trim()
-                                        }
-                                        .findAll {
-                                            it
-                                        }
-                                        .collect {
-                                            "'" +
-                                            it.replace(
-                                                "'",
-                                                "'\"'\"'"
-                                            ) +
-                                            "'"
-                                        }
+                                    def pythonTestFiles = testFiles
+                                        .collect { shellQuote(it) }
                                         .join(' ')
 
                                     /*
-                                     * Run Python tests in isolated venv.
+                                     * Fresh venv each run (clean, predictable);
+                                     * pip's download cache is shared, so installs
+                                     * are fast after the first run.
                                      */
                                     def pythonTestStatus = sh(
                                         script: """
+                                            export PIP_CACHE_DIR=${PIP_CACHE}
+                                            mkdir -p "\$PIP_CACHE_DIR" 2>/dev/null || true
+
                                             rm -rf .jenkins-pr-venv
 
                                             python3 -m venv .jenkins-pr-venv
@@ -643,28 +728,9 @@ def call(Map config = [:]) {
                                         returnStatus: true
                                     )
 
-                                    echo(
-                                        "Changed Python test files status: " +
-                                        "${pythonTestStatus}"
-                                    )
+                                    checkTestResult('Python', pythonTestStatus)
 
-                                    if (pythonTestStatus != 0) {
-
-                                        failPR(
-                                            'Python unit tests failed. Check Jenkins logs',
-                                            "Python unit tests added/modified " +
-                                            "in this PR failed. Developer needs " +
-                                            "to fix the affected tests/code."
-                                        )
-                                    }
-
-                                    echo(
-                                        "PR Python unit tests passed successfully"
-                                    )
-
-                                    /*
-                                     * Coverage must exist before Sonar.
-                                     */
+                                    // Coverage must exist before Sonar
                                     sh """
                                         test -f coverage.xml
 
@@ -673,72 +739,30 @@ def call(Map config = [:]) {
                                         ls -lh coverage.xml
                                     """
 
-                                    echo(
-                                        "Running Python SonarQube analysis"
-                                    )
+                                    echo "Running Python SonarQube analysis"
 
-                                    def scannerHome = tool 'sonar-scanner'
-
-                                    sh """
-                                        rm -rf .scannerwork || true
-                                        mkdir -p .scannerwork
-
-                                        export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
-                                        export PATH=\$JAVA_HOME/bin:\$PATH
-
-                                        java -version
-
-                                        ${scannerHome}/bin/sonar-scanner \
-                                          -Dsonar.scanner.skipJreProvisioning=true \
-                                          -Dsonar.host.url="${SONAR_HOST_URL}" \
-                                          -Dsonar.token="${SONAR_AUTH_TOKEN}" \
-                                          -Dsonar.projectKey="${repoName}" \
-                                          -Dsonar.sources=. \
-                                          -Dsonar.tests=. \
-                                          -Dsonar.test.inclusions="**/test_*.py,**/*_test.py" \
-                                          -Dsonar.python.coverage.reportPaths=coverage.xml \
-                                          -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
-                                          -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
-                                          -Dsonar.pullrequest.base="${env.CHANGE_TARGET}" \
-                                          -Dsonar.exclusions="**/.jenkins-pr-venv/**,**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc"
-                                    """
-
-                                    echo(
-                                        "Python SonarQube analysis completed successfully"
-                                    )
+                                    runSonarScanner([
+                                        '-Dsonar.sources=.',
+                                        '-Dsonar.tests=.',
+                                        '-Dsonar.test.inclusions="**/test_*.py,**/*_test.py"',
+                                        '-Dsonar.python.coverage.reportPaths=coverage.xml',
+                                        '-Dsonar.exclusions="**/.jenkins-pr-venv/**,**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc"'
+                                    ])
 
                                 /*
-                                 * =================================================
-                                 * GENERIC
-                                 * =================================================
+                                 * =============================================
+                                 * GENERIC (no unit-test requirement)
+                                 * =============================================
                                  */
                                 } else {
 
-                                    echo(
-                                        "Running generic SonarQube scan"
-                                    )
+                                    report.testResult = 'not required for this project type'
 
-                                    def scannerHome = tool 'sonar-scanner'
+                                    echo "Running generic SonarQube scan"
 
-                                    sh """
-                                        rm -rf .scannerwork || true
-                                        mkdir -p .scannerwork
-
-                                        export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
-                                        export PATH=\$JAVA_HOME/bin:\$PATH
-
-                                        java -version
-
-                                        ${scannerHome}/bin/sonar-scanner \
-                                          -Dsonar.scanner.skipJreProvisioning=true \
-                                          -Dsonar.host.url="${SONAR_HOST_URL}" \
-                                          -Dsonar.token="${SONAR_AUTH_TOKEN}" \
-                                          -Dsonar.projectKey="${repoName}" \
-                                          -Dsonar.sources=. \
-                                          -Dsonar.pullrequest.key="${env.CHANGE_ID}" \
-                                          -Dsonar.pullrequest.branch="${env.CHANGE_BRANCH}" \
-                                          -Dsonar.pullrequest.base="${env.CHANGE_TARGET}"
-                                    """
+                                    runSonarScanner([
+                                        '-Dsonar.sources=.'
+                                    ])
 
                                     sh """
                                         echo "Checking report-task.txt"
@@ -747,9 +771,7 @@ def call(Map config = [:]) {
                                     """
                                 }
 
-                                echo(
-                                    "SonarQube analysis completed successfully"
-                                )
+                                echo "SonarQube analysis completed successfully"
                             }
 
                         } catch (err) {
@@ -789,22 +811,15 @@ def call(Map config = [:]) {
                                 unit: 'MINUTES'
                             ) {
 
-                                echo(
-                                    "Waiting for SonarQube Quality Gate..."
-                                )
+                                echo "Waiting for SonarQube Quality Gate..."
 
                                 def qg = waitForQualityGate(
                                     abortPipeline: false
                                 )
 
-                                echo(
-                                    "Quality Gate Status: ${qg.status}"
-                                )
+                                echo "Quality Gate Status: ${qg.status}"
 
-                                def repoName = env.GIT_URL
-                                    .tokenize('/')
-                                    .last()
-                                    .replace('.git', '')
+                                def repoName = getRepoName()
 
                                 /*
                                  * Sonar remains separate from Jenkins.
@@ -827,29 +842,21 @@ def call(Map config = [:]) {
                                         'SonarQube Quality Gate Passed' :
                                         "SonarQube Quality Gate Failed: ${qg.status}"
 
-                                withCredentials([
-                                    usernamePassword(
-                                        credentialsId: 'github-cred',
-                                        usernameVariable: 'GITHUB_USER',
-                                        passwordVariable: 'GITHUB_TOKEN'
-                                    )
-                                ]) {
+                                postGitHubStatus(
+                                    'sonarqube/quality-gate',
+                                    githubState,
+                                    githubDescription,
+                                    sonarDashboardUrl
+                                )
 
-                                    sh """
-                                        curl --fail-with-body \
-                                          --request POST \
-                                          --header "Accept: application/vnd.github+json" \
-                                          --header "Authorization: Bearer \$GITHUB_TOKEN" \
-                                          --header "X-GitHub-Api-Version: 2022-11-28" \
-                                          "https://api.github.com/repos/KB-iGOT/${repoName}/statuses/${env.GIT_COMMIT}" \
-                                          --data '{
-                                            "state": "${githubState}",
-                                            "target_url": "${sonarDashboardUrl}",
-                                            "description": "${githubDescription}",
-                                            "context": "sonarqube/quality-gate"
-                                          }'
-                                    """
-                                }
+                                // Real Sonar result is on GitHub; post blocks must not overwrite it
+                                env.SONAR_STATUS_POSTED = 'true'
+
+                                report.sonarUrl = sonarDashboardUrl
+                                report.sonarResult =
+                                    qg.status == 'OK' ?
+                                        'Passed' :
+                                        "Failed (${qg.status})"
 
                                 if (qg.status != 'OK') {
 
@@ -863,9 +870,7 @@ def call(Map config = [:]) {
                                     )
                                 }
 
-                                echo(
-                                    "SonarQube Quality Gate Passed"
-                                )
+                                echo "SonarQube Quality Gate Passed"
                             }
 
                         } catch (err) {
@@ -885,10 +890,23 @@ def call(Map config = [:]) {
 
         /*
          * -------------------------------------------------------------
-         * Final Jenkins Status
+         * Final statuses
          * -------------------------------------------------------------
+         * Declarative runs `always` first, then aborted / failure /
+         * success / unstable.
          */
         post {
+
+            always {
+
+                script {
+
+                    // Sticky summary comment on the PR (never fails the build)
+                    postPRComment(currentBuild.currentResult)
+
+                    echo "PR Validation Pipeline Completed"
+                }
+            }
 
             success {
 
@@ -914,8 +932,6 @@ def call(Map config = [:]) {
                     /*
                      * Re-post the specific reason captured earlier so the
                      * generic message never overwrites it on GitHub.
-                     * Falls back to the generic text only if no reason
-                     * was captured.
                      */
                     if (env.CHANGE_ID) {
 
@@ -926,6 +942,12 @@ def call(Map config = [:]) {
                         )
                     }
 
+                    // Failed before Quality Gate posted its result: close that context too
+                    closeOutSonarStatus(
+                        'failure',
+                        "Not run: ${env.PR_FAILURE_REASON ?: 'Jenkins validation failed before Quality Gate'}"
+                    )
+
                     echo "PR Validation Failed: ${env.PR_FAILURE_REASON ?: 'see logs'}"
 
                     echo(
@@ -935,9 +957,52 @@ def call(Map config = [:]) {
                 }
             }
 
-            always {
+            /*
+             * Aborted (manual abort, newer push, Jenkins restart, or the
+             * 45 min timeout). Without this, "pending" would stay forever.
+             */
+            aborted {
 
-                echo "PR Validation Pipeline Completed"
+                script {
+
+                    if (env.CHANGE_ID) {
+
+                        updateJenkinsGitHubStatus(
+                            'error',
+                            env.PR_FAILURE_REASON ?:
+                                'Jenkins PR validation was aborted or timed out'
+                        )
+
+                        closeOutSonarStatus(
+                            'error',
+                            'Not run: Jenkins PR validation was aborted or timed out'
+                        )
+                    }
+
+                    echo "PR Validation Aborted"
+                }
+            }
+
+            unstable {
+
+                script {
+
+                    if (env.CHANGE_ID) {
+
+                        updateJenkinsGitHubStatus(
+                            'failure',
+                            env.PR_FAILURE_REASON ?:
+                                'Jenkins PR validation finished unstable. Check build logs'
+                        )
+
+                        closeOutSonarStatus(
+                            'failure',
+                            'Not run: Jenkins PR validation finished unstable'
+                        )
+                    }
+
+                    echo "PR Validation Unstable"
+                }
             }
         }
     }
