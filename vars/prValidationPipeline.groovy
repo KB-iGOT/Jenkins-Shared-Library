@@ -102,6 +102,84 @@ def call(Map config = [:]) {
     }
 
     /*
+     * True when this build was cancelled because a newer push to the same PR
+     * started another build (disableConcurrentBuilds abortPrevious).
+     * Such a build must stay silent: no status, no PR comment. Otherwise its
+     * "Superseded by #N" result overwrites the newer build's comment.
+     */
+    def isSuperseded = {
+        return currentBuild.currentResult == 'NOT_BUILT' ||
+               (env.PR_FAILURE_REASON ?: '').contains('Superseded by')
+    }
+
+    /*
+     * Final (non-success) Jenkins status that survives the plugin's own
+     * notification.
+     *
+     * The GitHub Branch Source plugin posts its generic text
+     * ("This commit cannot be built") on the same pr-head context AFTER the
+     * pipeline finishes, replacing our specific reason. So: post now, and
+     * re-post once from a detached background process a few seconds later.
+     * The Jenkins node is persistent, so the process outlives the build.
+     * Best effort only: any problem here is logged and never fails the build.
+     */
+    def reportFinalJenkinsStatus = { String state, String description ->
+
+        updateJenkinsGitHubStatus(state, description)
+
+        try {
+
+            def safeDescription = (description ?: '')
+                .replaceAll(/["'\\\r\n]+/, ' ')
+                .take(140)
+
+            def repoName    = getRepoName()
+            def payloadFile = "/tmp/pr-head-final-" +
+                env.BUILD_TAG.replaceAll('[^A-Za-z0-9._-]', '_') + ".json"
+
+            writeFile(
+                file: payloadFile,
+                text: groovy.json.JsonOutput.toJson([
+                    state      : state,
+                    target_url : env.BUILD_URL,
+                    description: safeDescription,
+                    context    : 'continuous-integration/jenkins/pr-head'
+                ])
+            )
+
+            withCredentials([
+                usernamePassword(
+                    credentialsId: 'github-cred',
+                    usernameVariable: 'GITHUB_USER',
+                    passwordVariable: 'GITHUB_TOKEN'
+                )
+            ]) {
+                sh """
+                    export JENKINS_NODE_COOKIE=dontKillMe
+                    export BUILD_ID=dontKillMe
+
+                    nohup setsid bash -c '
+                        sleep 25
+                        curl -sS --fail-with-body \
+                          --request POST \
+                          --header "Accept: application/vnd.github+json" \
+                          --header "Authorization: Bearer \$GITHUB_TOKEN" \
+                          --header "X-GitHub-Api-Version: 2022-11-28" \
+                          --data @"${payloadFile}" \
+                          "https://api.github.com/repos/KB-iGOT/${repoName}/statuses/${env.GIT_COMMIT}" \
+                          >/dev/null 2>&1
+                        rm -f "${payloadFile}"
+                    ' >/dev/null 2>&1 &
+                """
+            }
+
+        } catch (err) {
+
+            echo "WARNING: could not schedule final status re-post: ${err.getMessage()}"
+        }
+    }
+
+    /*
      * Fail the PR with a specific reason:
      * remembers it (post blocks re-use it), posts it, fails the build.
      */
@@ -901,8 +979,15 @@ def call(Map config = [:]) {
 
                 script {
 
-                    // Sticky summary comment on the PR (never fails the build)
-                    postPRComment(currentBuild.currentResult)
+                    if (isSuperseded()) {
+
+                        echo "Build superseded by a newer one; skipping PR comment"
+
+                    } else {
+
+                        // Sticky summary comment on the PR (never fails the build)
+                        postPRComment(currentBuild.currentResult)
+                    }
 
                     echo "PR Validation Pipeline Completed"
                 }
@@ -933,9 +1018,15 @@ def call(Map config = [:]) {
                      * Re-post the specific reason captured earlier so the
                      * generic message never overwrites it on GitHub.
                      */
+                    if (isSuperseded()) {
+
+                        echo "Build superseded by a newer one; skipping GitHub statuses"
+                        return
+                    }
+
                     if (env.CHANGE_ID) {
 
-                        updateJenkinsGitHubStatus(
+                        reportFinalJenkinsStatus(
                             'failure',
                             env.PR_FAILURE_REASON ?:
                                 'Jenkins PR validation failed. Check build logs'
@@ -965,9 +1056,15 @@ def call(Map config = [:]) {
 
                 script {
 
+                    if (isSuperseded()) {
+
+                        echo "Build superseded by a newer one; skipping GitHub statuses"
+                        return
+                    }
+
                     if (env.CHANGE_ID) {
 
-                        updateJenkinsGitHubStatus(
+                        reportFinalJenkinsStatus(
                             'error',
                             env.PR_FAILURE_REASON ?:
                                 'Jenkins PR validation was aborted or timed out'
@@ -989,7 +1086,7 @@ def call(Map config = [:]) {
 
                     if (env.CHANGE_ID) {
 
-                        updateJenkinsGitHubStatus(
+                        reportFinalJenkinsStatus(
                             'failure',
                             env.PR_FAILURE_REASON ?:
                                 'Jenkins PR validation finished unstable. Check build logs'
