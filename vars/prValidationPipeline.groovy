@@ -700,7 +700,11 @@ def call(Map config = [:]) {
                                         script: """
                                             mkdir -p ${JEST_CACHE} ${YARN_CACHE} 2>/dev/null || true
 
+                                            # Run as the Jenkins user (not root) so node_modules,
+                                            # coverage etc. in the workspace stay deletable by cleanWs
                                             docker run --rm \
+                                              -u "\$(id -u):\$(id -g)" \
+                                              -e HOME=/tmp \
                                               -v "\$(pwd):/usr/src" \
                                               -v ${JEST_CACHE}:/tmp/jest-cache \
                                               -v ${YARN_CACHE}:/tmp/yarn-cache \
@@ -1078,6 +1082,24 @@ def call(Map config = [:]) {
 
                     echo "PR Validation Aborted"
                 }
+            }
+
+            /*
+             * Runs last, after every other post block (and after the PR
+             * comment, which reads files from the workspace).
+             * Deletes this build's workspace (node_modules, coverage,
+             * target, venv, clone: ~1.7 GB for sunbird-cb-portal). The shared
+             * caches under /opt (yarn, jest, sonar, pip) and ~/.m2 are outside
+             * the workspace, so reruns stay fast.
+             * Never fails the build.
+             */
+            cleanup {
+
+                cleanWs(
+                    deleteDirs: true,
+                    disableDeferredWipeout: true,
+                    notFailBuild: true
+                )
             }
 
             unstable {
