@@ -30,7 +30,10 @@ def call(Map config = [:]) {
         testResult : 'not run',
         testErrors : '',
         sonarResult: 'not run',
-        sonarUrl   : ''
+        sonarUrl   : '',
+        sonarConditions : [],   // markdown rows: failed Quality Gate conditions
+        sonarIssues     : [],   // markdown rows: top new issues in the PR
+        sonarIssuesTotal: 0
     ]
 
     /*
@@ -268,6 +271,50 @@ bash -e ${cmdFile} 2>&1 | tee ${logFile}
     }
 
     /*
+     * On a failed Quality Gate, pull the details from the SonarQube API:
+     *   - failed conditions  (api/qualitygates/project_status)
+     *   - top new issues     (api/issues/search)
+     * Results go into `report` for the PR comment.
+     * Best effort only: never fails the build.
+     */
+    def fetchSonarFailureDetails = { String repoName ->
+
+        try {
+
+            withSonarQubeEnv("${env.SONARQUBE_ENV}") {
+
+                def qgJson = sh(
+                    script: """
+                        set +x
+                        curl -sS --fail -u "\$SONAR_AUTH_TOKEN:" \
+                          "\$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=${repoName}&pullRequest=${env.CHANGE_ID}"
+                    """,
+                    returnStdout: true
+                ).trim()
+
+                report.sonarConditions = formatSonarConditions(qgJson)
+
+                def issuesJson = sh(
+                    script: """
+                        set +x
+                        curl -sS --fail -u "\$SONAR_AUTH_TOKEN:" \
+                          "\$SONAR_HOST_URL/api/issues/search?componentKeys=${repoName}&pullRequest=${env.CHANGE_ID}&resolved=false&ps=10&s=SEVERITY&asc=false"
+                    """,
+                    returnStdout: true
+                ).trim()
+
+                def issues = formatSonarIssues(issuesJson)
+                report.sonarIssuesTotal = issues.total
+                report.sonarIssues      = issues.rows
+            }
+
+        } catch (err) {
+
+            echo "WARNING: could not fetch SonarQube failure details: ${err.getMessage()}"
+        }
+    }
+
+    /*
      * Fetch the PR target branch and log the changed files.
      * Fails clearly if the fetch fails (no silent diff against a stale ref).
      */
@@ -441,6 +488,38 @@ bash -e ${cmdFile} 2>&1 | tee ${logFile}
                 lines << report.testErrors
                 lines << '~~~~'
                 lines << ''
+                lines << '</details>'
+                lines << ''
+            }
+
+            // SonarQube Quality Gate failure details
+            if (report.sonarConditions) {
+                lines << '<details open><summary><b>SonarQube: failed Quality Gate conditions</b></summary>'
+                lines << ''
+                lines << '| Metric (new code) | Actual | Required |'
+                lines << '|---|---|---|'
+                for (row in report.sonarConditions) {
+                    lines << row
+                }
+                lines << ''
+                lines << '</details>'
+                lines << ''
+            }
+
+            if (report.sonarIssues) {
+                def shown = report.sonarIssues.size()
+                lines << "<details open><summary><b>SonarQube: new issues (showing ${shown} of ${report.sonarIssuesTotal})</b></summary>"
+                lines << ''
+                lines << '| Severity | Type | Location | Message |'
+                lines << '|---|---|---|---|'
+                for (row in report.sonarIssues) {
+                    lines << row
+                }
+                lines << ''
+                if (report.sonarIssuesTotal > shown) {
+                    lines << '_Remaining issues are listed in the SonarQube analysis link below._'
+                    lines << ''
+                }
                 lines << '</details>'
                 lines << ''
             }
@@ -1021,6 +1100,9 @@ bash -e ${cmdFile} 2>&1 | tee ${logFile}
 
                                 if (qg.status != 'OK') {
 
+                                    // Failed conditions + top new issues for the PR comment
+                                    fetchSonarFailureDetails(repoName)
+
                                     // Jenkins status also says why (details are on the SonarQube check)
                                     env.PR_FAILURE_REASON =
                                         "SonarQube Quality Gate failed: ${qg.status}. See SonarQube check"
@@ -1277,4 +1359,114 @@ String extractTestErrors(String log, String projectType) {
         .replace('~~~~', '~ ~ ~ ~')
 
     return cut ? text + '\n… truncated — see full console log' : text
+}
+
+/*
+ * ---------------------------------------------------------
+ * SonarQube API -> markdown table rows for the PR comment
+ * ---------------------------------------------------------
+ */
+
+@NonCPS
+String sonarMetricLabel(String key) {
+    def labels = [
+        new_coverage                      : 'Coverage',
+        new_line_coverage                 : 'Line coverage',
+        new_branch_coverage               : 'Branch coverage',
+        new_duplicated_lines_density      : 'Duplicated lines',
+        new_violations                    : 'Issues',
+        new_bugs                          : 'Bugs',
+        new_vulnerabilities               : 'Vulnerabilities',
+        new_code_smells                   : 'Code smells',
+        new_reliability_rating            : 'Reliability rating',
+        new_security_rating               : 'Security rating',
+        new_maintainability_rating        : 'Maintainability rating',
+        new_sqale_rating                  : 'Maintainability rating',
+        new_security_hotspots_reviewed    : 'Security hotspots reviewed',
+        new_blocker_violations            : 'Blocker issues',
+        new_critical_violations           : 'Critical issues'
+    ]
+    return labels[key] ?: key
+}
+
+@NonCPS
+String sonarMetricValue(String key, String value) {
+    if (value == null || value == '') {
+        return '-'
+    }
+    if (key.endsWith('_rating')) {
+        // 1..5 -> A..E
+        def idx = (value as BigDecimal).intValue()
+        return (idx >= 1 && idx <= 5) ? ['A', 'B', 'C', 'D', 'E'][idx - 1] : value
+    }
+    if (key.contains('coverage') || key.contains('density') || key.endsWith('_reviewed')) {
+        return String.format('%.1f%%', value as BigDecimal)
+    }
+    return value
+}
+
+@NonCPS
+String mdCell(String s) {
+    return (s ?: '').replace('|', '\\|').replaceAll(/[\r\n]+/, ' ').take(200)
+}
+
+@NonCPS
+List<String> formatSonarConditions(String json) {
+
+    def data  = new groovy.json.JsonSlurperClassic().parseText(json ?: '{}')
+    def conds = data?.projectStatus?.conditions ?: []
+
+    List<String> rows = []
+
+    for (c in conds) {
+        if (c.status != 'ERROR') {
+            continue
+        }
+        String key = c.metricKey ?: ''
+        String op
+
+        if (key.endsWith('_rating')) {
+            // rating condition "GT 1" means "must be A"
+            op = 'at least ' + sonarMetricValue(key, c.errorThreshold as String)
+        } else if (c.comparator == 'GT') {
+            op = '≤ ' + sonarMetricValue(key, c.errorThreshold as String)
+        } else {
+            op = '≥ ' + sonarMetricValue(key, c.errorThreshold as String)
+        }
+
+        rows << "| ${sonarMetricLabel(key)} | ❌ ${sonarMetricValue(key, c.actualValue as String)} | ${op} |"
+    }
+
+    return rows
+}
+
+@NonCPS
+Map formatSonarIssues(String json) {
+
+    def data   = new groovy.json.JsonSlurperClassic().parseText(json ?: '{}')
+    def issues = data?.issues ?: []
+
+    List<String> rows = []
+
+    for (i in issues) {
+
+        // SonarQube 10.x: impacts[].severity (HIGH/MEDIUM/LOW); older: severity
+        String severity = (i.impacts && i.impacts[0]?.severity) ?
+            i.impacts[0].severity : (i.severity ?: '-')
+
+        String type = (i.impacts && i.impacts[0]?.softwareQuality) ?
+            i.impacts[0].softwareQuality : (i.type ?: '-')
+
+        // component = "<projectKey>:<path>"
+        String path = (i.component ?: '')
+        int colon = path.indexOf(':')
+        if (colon >= 0) {
+            path = path.substring(colon + 1)
+        }
+        String location = i.line ? "${path}:${i.line}" : path
+
+        rows << "| ${mdCell(severity)} | ${mdCell(type)} | `${mdCell(location)}` | ${mdCell(i.message as String)} |"
+    }
+
+    return [total: (data?.total ?: data?.paging?.total ?: rows.size()) as int, rows: rows]
 }
