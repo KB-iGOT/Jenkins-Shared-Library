@@ -28,6 +28,7 @@ def call(Map config = [:]) {
         projectType: 'unknown',
         testFiles  : [],
         testResult : 'not run',
+        testErrors : '',
         sonarResult: 'not run',
         sonarUrl   : ''
     ]
@@ -49,6 +50,32 @@ def call(Map config = [:]) {
     // Safe single-quoting for shell arguments
     def shellQuote = { String value ->
         "'" + value.replace("'", "'\"'\"'") + "'"
+    }
+
+    /*
+     * Developer-facing Jenkins link for this build.
+     *
+     * env.BUILD_URL is built from the "Jenkins URL" in Manage Jenkins ->
+     * System (the portal.dev URL), which developers cannot open. When the
+     * global env var PR_LINK_JENKINS_BASE is set
+     * (e.g. http://localhost:8081/igotbuild-deploy/), the build path is
+     * re-based onto it. Unset -> plain BUILD_URL (old behaviour).
+     *
+     * jenkinsLink('')            -> build page
+     * jenkinsLink('consoleFull') -> full console log
+     */
+    def jenkinsLink = { String suffix ->
+        def buildUrl = env.BUILD_URL ?: ''
+        def root     = env.JENKINS_URL ?: ''
+        def base     = (env.PR_LINK_JENKINS_BASE ?: '').trim()
+
+        if (!base || !root || !buildUrl.startsWith(root)) {
+            return buildUrl + (suffix ?: '')
+        }
+
+        return base.replaceAll('/+$', '') + '/' +
+               buildUrl.substring(root.length()) +
+               (suffix ?: '')
     }
 
     /*
@@ -91,13 +118,13 @@ def call(Map config = [:]) {
         }
     }
 
-    // Jenkins context: continuous-integration/jenkins/pr-head -> BUILD_URL
+    // Jenkins context: continuous-integration/jenkins/pr-head -> developer-facing build link
     def updateJenkinsGitHubStatus = { String state, String description ->
         postGitHubStatus(
             'continuous-integration/jenkins/pr-head',
             state,
             description,
-            env.BUILD_URL
+            jenkinsLink('')
         )
     }
 
@@ -141,7 +168,7 @@ def call(Map config = [:]) {
                 file: payloadFile,
                 text: groovy.json.JsonOutput.toJson([
                     state      : state,
-                    target_url : env.BUILD_URL,
+                    target_url : jenkinsLink(''),
                     description: safeDescription,
                     context    : 'continuous-integration/jenkins/pr-head'
                 ])
@@ -199,9 +226,45 @@ def call(Map config = [:]) {
                 'sonarqube/quality-gate',
                 state,
                 description,
-                env.BUILD_URL
+                jenkinsLink('')
             )
         }
+    }
+
+    /*
+     * Run a test script, streaming output to the Jenkins console AND
+     * capturing it to a log file. On failure, the relevant error section
+     * is extracted into report.testErrors for the PR comment.
+     *
+     * pipefail makes the exit code come from the test script, not from tee.
+     * The script runs with `bash -e`, same fail-fast behaviour as the
+     * default Jenkins `sh -e`.
+     */
+    def runAndCapture = { String label, String script ->
+
+        def slug    = label.toLowerCase().replaceAll('[^a-z0-9]+', '-')
+        def cmdFile = ".pr-test-${slug}.sh"
+        def logFile = ".pr-test-${slug}.log"
+
+        writeFile file: cmdFile, text: script
+
+        def status = sh(
+            script: """#!/bin/bash
+set -o pipefail
+bash -e ${cmdFile} 2>&1 | tee ${logFile}
+""",
+            returnStatus: true
+        )
+
+        if (status != 0) {
+            try {
+                report.testErrors = extractTestErrors(readFile(logFile), env.PROJECT_TYPE)
+            } catch (err) {
+                echo "WARNING: could not extract test errors: ${err.getMessage()}"
+            }
+        }
+
+        return status
     }
 
     /*
@@ -283,7 +346,7 @@ def call(Map config = [:]) {
         if (status != 0) {
             report.testResult = 'failed'
             failPR(
-                "${label} unit tests failed. Check Jenkins logs",
+                "${label} unit tests failed. See errors in PR comment",
                 "${label} unit tests added/modified in this PR failed. " +
                 "Developer needs to fix the affected tests/code."
             )
@@ -370,6 +433,18 @@ def call(Map config = [:]) {
                 lines << ''
             }
 
+            // Extracted failure section of the unit-test output
+            if (report.testErrors) {
+                lines << '<details open><summary><b>Unit test errors</b></summary>'
+                lines << ''
+                lines << '~~~~text'
+                lines << report.testErrors
+                lines << '~~~~'
+                lines << ''
+                lines << '</details>'
+                lines << ''
+            }
+
             if (report.testFiles) {
                 lines << '<details><summary>Unit test files in this PR</summary>'
                 lines << ''
@@ -381,11 +456,18 @@ def call(Map config = [:]) {
                 lines << ''
             }
 
-            def links = "[Jenkins build](${env.BUILD_URL}) | [Console log](${env.BUILD_URL}console)"
+            def links = "[Jenkins build](${jenkinsLink('')}) | [Console log](${jenkinsLink('consoleFull')})"
             if (report.sonarUrl) {
                 links += " | [SonarQube analysis](${report.sonarUrl})"
             }
             lines << links
+
+            if ((env.PR_LINK_JENKINS_BASE ?: '').contains('localhost')) {
+                def port = (env.PR_LINK_JENKINS_BASE =~ /localhost:(\d+)/) ? (env.PR_LINK_JENKINS_BASE =~ /localhost:(\d+)/)[0][1] : ''
+                lines << ''
+                lines << "_Jenkins links need VPN + SSH tunnel to Jenkins on local port ${port}._"
+            }
+
             lines << ''
             lines << "_Commit ${(env.GIT_COMMIT ?: '').take(7)}_"
 
@@ -491,6 +573,7 @@ def call(Map config = [:]) {
                         )
 
                         echo "Jenkins Build URL: ${env.BUILD_URL}"
+                        echo "Developer-facing build link: ${jenkinsLink('')}"
                     }
                 }
             }
@@ -639,20 +722,17 @@ def call(Map config = [:]) {
                                      * tests + jacoco report. Sonar then reuses
                                      * target/ instead of re-running the tests.
                                      */
-                                    def mavenStatus = sh(
-                                        script: """
-                                            export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
-                                            export PATH="\$JAVA_HOME/bin:\$PATH"
+                                    def mavenStatus = runAndCapture('java', """
+                                        export JAVA_HOME=/var/lib/jenkins/jdk-17.0.12
+                                        export PATH="\$JAVA_HOME/bin:\$PATH"
 
-                                            java -version
+                                        java -version
 
-                                            /var/lib/jenkins/apache-maven-3.8.8/bin/mvn -B -ntp \
-                                              clean verify \
-                                              -Dtest="${javaTestClasses}" \
-                                              -Djacoco.haltOnFailure=false
-                                        """,
-                                        returnStatus: true
-                                    )
+                                        /var/lib/jenkins/apache-maven-3.8.8/bin/mvn -B -ntp \
+                                          clean verify \
+                                          -Dtest="${javaTestClasses}" \
+                                          -Djacoco.haltOnFailure=false
+                                    """)
 
                                     checkTestResult('Java', mavenStatus)
 
@@ -695,38 +775,38 @@ def call(Map config = [:]) {
                                     /*
                                      * yarn + jest caches are mounted from the agent,
                                      * so reruns skip re-downloading packages.
+                                     * FORCE_COLOR=0 keeps ANSI colour codes out of the
+                                     * captured log / PR comment.
                                      */
-                                    def testStatus = sh(
-                                        script: """
-                                            mkdir -p ${JEST_CACHE} ${YARN_CACHE} 2>/dev/null || true
+                                    def testStatus = runAndCapture('node', """
+                                        mkdir -p ${JEST_CACHE} ${YARN_CACHE} 2>/dev/null || true
 
-                                            # Run as the Jenkins user (not root) so node_modules,
-                                            # coverage etc. in the workspace stay deletable by cleanWs
-                                            docker run --rm \
-                                              -u "\$(id -u):\$(id -g)" \
-                                              -e HOME=/tmp \
-                                              -v "\$(pwd):/usr/src" \
-                                              -v ${JEST_CACHE}:/tmp/jest-cache \
-                                              -v ${YARN_CACHE}:/tmp/yarn-cache \
-                                              -e YARN_CACHE_FOLDER=/tmp/yarn-cache \
-                                              node:22 \
-                                              sh -c '
-                                                  cd /usr/src &&
+                                        # Run as the Jenkins user (not root) so node_modules,
+                                        # coverage etc. in the workspace stay deletable by cleanWs
+                                        docker run --rm \
+                                          -u "\$(id -u):\$(id -g)" \
+                                          -e HOME=/tmp \
+                                          -e FORCE_COLOR=0 \
+                                          -v "\$(pwd):/usr/src" \
+                                          -v ${JEST_CACHE}:/tmp/jest-cache \
+                                          -v ${YARN_CACHE}:/tmp/yarn-cache \
+                                          -e YARN_CACHE_FOLDER=/tmp/yarn-cache \
+                                          node:22 \
+                                          sh -c '
+                                              cd /usr/src &&
 
-                                                  yarn install --prefer-offline &&
+                                              yarn install --prefer-offline &&
 
-                                                  xargs -d "\\n" ./node_modules/.bin/jest \
-                                                    --ci \
-                                                    --coverage \
-                                                    --coverageReporters=lcov \
-                                                    --cacheDirectory=/tmp/jest-cache \
-                                                    --detectOpenHandles \
-                                                    --forceExit \
-                                                    --runTestsByPath < .pr-test-files.txt
-                                              '
-                                        """,
-                                        returnStatus: true
-                                    )
+                                              xargs -d "\\n" ./node_modules/.bin/jest \
+                                                --ci \
+                                                --coverage \
+                                                --coverageReporters=lcov \
+                                                --cacheDirectory=/tmp/jest-cache \
+                                                --detectOpenHandles \
+                                                --forceExit \
+                                                --runTestsByPath < .pr-test-files.txt
+                                          '
+                                    """)
 
                                     checkTestResult('Node.js', testStatus)
 
@@ -759,56 +839,54 @@ def call(Map config = [:]) {
                                      * pip's download cache is shared, so installs
                                      * are fast after the first run.
                                      */
-                                    def pythonTestStatus = sh(
-                                        script: """
-                                            export PIP_CACHE_DIR=${PIP_CACHE}
-                                            mkdir -p "\$PIP_CACHE_DIR" 2>/dev/null || true
+                                    def pythonTestStatus = runAndCapture('python', """
+                                        export PIP_CACHE_DIR=${PIP_CACHE}
+                                        mkdir -p "\$PIP_CACHE_DIR" 2>/dev/null || true
 
-                                            rm -rf .jenkins-pr-venv
+                                        rm -rf .jenkins-pr-venv
 
-                                            python3 -m venv .jenkins-pr-venv
+                                        python3 -m venv .jenkins-pr-venv
 
-                                            . .jenkins-pr-venv/bin/activate
+                                        . .jenkins-pr-venv/bin/activate
 
-                                            python --version
+                                        python --version
 
-                                            python -m pip install --upgrade pip
+                                        python -m pip install --upgrade pip
 
-                                            # Application dependencies
-                                            if [ -f requirements.txt ]; then
-                                                python -m pip install \
-                                                  -r requirements.txt
-                                            fi
+                                        # Application dependencies
+                                        if [ -f requirements.txt ]; then
+                                            python -m pip install \
+                                              -r requirements.txt
+                                        fi
 
-                                            # Project test dependencies
-                                            if [ -f requirements-test.txt ]; then
-                                                python -m pip install \
-                                                  -r requirements-test.txt
-                                            elif [ -f requirements-dev.txt ]; then
-                                                python -m pip install \
-                                                  -r requirements-dev.txt
-                                            fi
+                                        # Project test dependencies
+                                        if [ -f requirements-test.txt ]; then
+                                            python -m pip install \
+                                              -r requirements-test.txt
+                                        elif [ -f requirements-dev.txt ]; then
+                                            python -m pip install \
+                                              -r requirements-dev.txt
+                                        fi
 
-                                            # Jenkins-required testing tools
-                                            python -m pip install pytest coverage
+                                        # Jenkins-required testing tools
+                                        python -m pip install pytest coverage
 
-                                            coverage erase
+                                        coverage erase
 
-                                            coverage run \
-                                              --source=. \
-                                              -m pytest \
-                                              ${pythonTestFiles}
+                                        # bash -e would stop here on failure; capture the
+                                        # status explicitly instead
+                                        TEST_STATUS=0
+                                        coverage run \
+                                          --source=. \
+                                          -m pytest \
+                                          ${pythonTestFiles} || TEST_STATUS=\$?
 
-                                            TEST_STATUS=\$?
+                                        if [ \$TEST_STATUS -eq 0 ]; then
+                                            coverage xml -o coverage.xml
+                                        fi
 
-                                            if [ \$TEST_STATUS -eq 0 ]; then
-                                                coverage xml -o coverage.xml
-                                            fi
-
-                                            exit \$TEST_STATUS
-                                        """,
-                                        returnStatus: true
-                                    )
+                                        exit \$TEST_STATUS
+                                    """)
 
                                     checkTestResult('Python', pythonTestStatus)
 
@@ -828,7 +906,7 @@ def call(Map config = [:]) {
                                         '-Dsonar.tests=.',
                                         '-Dsonar.test.inclusions="**/test_*.py,**/*_test.py"',
                                         '-Dsonar.python.coverage.reportPaths=coverage.xml',
-                                        '-Dsonar.exclusions="**/.jenkins-pr-venv/**,**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc"'
+                                        '-Dsonar.exclusions="**/.jenkins-pr-venv/**,**/.venv/**,**/venv/**,**/__pycache__/**,**/*.pyc,.pr-test-*"'
                                     ])
 
                                 /*
@@ -843,7 +921,8 @@ def call(Map config = [:]) {
                                     echo "Running generic SonarQube scan"
 
                                     runSonarScanner([
-                                        '-Dsonar.sources=.'
+                                        '-Dsonar.sources=.',
+                                        '-Dsonar.exclusions=".pr-test-*,.pr-comment.json"'
                                     ])
 
                                     sh """
@@ -1125,4 +1204,77 @@ def call(Map config = [:]) {
             }
         }
     }
+}
+
+/*
+ * ---------------------------------------------------------
+ * Extract the failure section of a unit-test log for the PR comment.
+ * ---------------------------------------------------------
+ *
+ * node   : jest   -> first "FAIL"/"●" line .. "Tests:" summary
+ * python : pytest -> "== FAILURES/ERRORS ==" .. final "== N failed ==" line
+ * java   : maven  -> all [ERROR] lines minus maven boilerplate
+ *                    (covers both test failures and compilation errors)
+ * Fallback (e.g. yarn/pip install failed): last MAX_LINES lines.
+ *
+ * Output is capped, secret-looking values are masked, and "~~~~"
+ * is neutralised so log text can't close the comment's code fence.
+ */
+@NonCPS
+String extractTestErrors(String log, String projectType) {
+
+    final int MAX_LINES = 80
+    final int MAX_CHARS = 6000
+
+    List<String> lines = (log ?: '')
+        .replaceAll(/\u001B\[[;?0-9]*[A-Za-z]/, '')   // ANSI colour codes
+        .readLines()
+
+    List<String> section = []
+
+    if (projectType == 'java') {
+
+        section = lines.findAll { String l ->
+            l.startsWith('[ERROR]') &&
+            !(l ==~ /^\[ERROR\]\s*$/) &&
+            !(l =~ /\[Help \d+\]|Re-run Maven|For more information about|full stack trace|-> \[Help/)
+        }
+
+    } else {
+
+        int start = -1
+        int end   = -1
+
+        if (projectType == 'node') {
+            start = lines.findIndexOf     { it =~ /^\s*(FAIL\s|●)/ }
+            end   = lines.findLastIndexOf { it =~ /^Tests:/ }
+        } else if (projectType == 'python') {
+            start = lines.findIndexOf     { it =~ /^=+ (FAILURES|ERRORS) =+/ }
+            end   = lines.findLastIndexOf { it =~ /^=+ .*(failed|error).* =+$/ }
+        }
+
+        if (start >= 0) {
+            int stop = (end >= start) ? end + 1 : lines.size()
+            section = new ArrayList<String>(lines.subList(start, stop))
+        }
+    }
+
+    if (!section) {
+        int from = Math.max(0, lines.size() - MAX_LINES)
+        section = new ArrayList<String>(lines.subList(from, lines.size()))
+    }
+
+    boolean cut = section.size() > MAX_LINES
+    String text = section.take(MAX_LINES).join('\n')
+
+    if (text.length() > MAX_CHARS) {
+        text = text.take(MAX_CHARS)
+        cut = true
+    }
+
+    text = text
+        .replaceAll(/(?i)((password|passwd|token|secret|api[_-]?key)\s*[=:]\s*)\S+/, '$1****')
+        .replace('~~~~', '~ ~ ~ ~')
+
+    return cut ? text + '\n… truncated — see full console log' : text
 }
