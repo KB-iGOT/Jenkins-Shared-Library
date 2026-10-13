@@ -438,6 +438,8 @@ bash -e ${cmdFile} 2>&1 | tee ${logFile}
 
     /*
      * Create/update a single "sticky" summary comment on the PR.
+     * On a non-success result the PR author is @mentioned, so GitHub
+     * notifies (emails) the developer who raised the PR.
      * Never fails the build: any error is logged as a warning.
      */
     def postPRComment = { String overall ->
@@ -466,6 +468,19 @@ bash -e ${cmdFile} 2>&1 | tee ${logFile}
             lines << marker
             lines << "### Jenkins PR validation: ${overallText}"
             lines << ''
+
+            /*
+             * Notify the PR raiser on failure.
+             * CHANGE_AUTHOR = GitHub login of the PR author (set by the
+             * GitHub Branch Source plugin). The mention is dropped on
+             * success, so a later failure re-adds it and notifies again.
+             */
+            def prAuthor = (env.CHANGE_AUTHOR ?: '').trim()
+            if (overall != 'SUCCESS' && prAuthor ==~ /[A-Za-z0-9-]+/) {
+                lines << "@${prAuthor} PR validation failed. Please check the details below."
+                lines << ''
+            }
+
             lines << '| Check | Result |'
             lines << '|---|---|'
             lines << "| Jira ID | ${jiraText} |"
@@ -653,6 +668,7 @@ bash -e ${cmdFile} 2>&1 | tee ${logFile}
 
                         echo "Jenkins Build URL: ${env.BUILD_URL}"
                         echo "Developer-facing build link: ${jenkinsLink('')}"
+                        echo "PR author: ${env.CHANGE_AUTHOR ?: 'unknown'}"
                     }
                 }
             }
