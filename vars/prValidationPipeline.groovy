@@ -385,10 +385,33 @@ bash -e ${cmdFile} 2>&1 | tee ${logFile}
 
     /*
      * Evaluate a test run's exit status.
+     *
+     *  90 -> dependency install failed on the agent (set by the Python
+     *        script's ERR trap): a Jenkins/DevOps problem, not the developer's
+     *   2 -> pytest could not even load the tests (import/collection error)
+     *  other non-zero -> tests ran and failed
      */
     def checkTestResult = { String label, int status ->
 
         echo "Changed ${label} test files status: ${status}"
+
+        if (status == 90) {
+            report.testResult = 'not run (dependency install failed)'
+            failPR(
+                "${label} dependency install failed in Jenkins (not a test failure). See PR comment",
+                "${label} dependency install failed on the Jenkins agent. " +
+                "DevOps to check the console log."
+            )
+        }
+
+        if (label == 'Python' && status == 2) {
+            report.testResult = 'failed (tests could not be loaded)'
+            failPR(
+                "${label} tests could not be loaded (import/collection error). See errors in PR comment",
+                "${label} tests added/modified in this PR could not be loaded by pytest. " +
+                "Developer needs to fix the import/collection error."
+            )
+        }
 
         if (status != 0) {
             report.testResult = 'failed'
@@ -931,8 +954,18 @@ bash -e ${cmdFile} 2>&1 | tee ${logFile}
 
                                     /*
                                      * Fresh venv each run (clean, predictable);
-                                     * pip's download cache is shared, so installs
+                                     * pip/uv download caches are shared, so installs
                                      * are fast after the first run.
+                                     *
+                                     * Two dependency paths:
+                                     *  - pyproject.toml and no requirements.txt
+                                     *    (e.g. deterministic-chatbot): uv installs the
+                                     *    project + its extras, and the Python version the
+                                     *    project needs (agent only has 3.10)
+                                     *  - otherwise: pip + requirements*.txt (old behaviour)
+                                     *
+                                     * Any install failure exits 90 (ERR trap), so it is
+                                     * reported as a Jenkins problem, not a test failure.
                                      */
                                     def pythonTestStatus = runAndCapture('python', """
                                         export PIP_CACHE_DIR=${PIP_CACHE}
@@ -940,31 +973,73 @@ bash -e ${cmdFile} 2>&1 | tee ${logFile}
 
                                         rm -rf .jenkins-pr-venv
 
-                                        python3 -m venv .jenkins-pr-venv
+                                        trap 'echo "PR-VALIDATION: Python dependency install failed"; exit 90' ERR
 
-                                        . .jenkins-pr-venv/bin/activate
+                                        if [ -f pyproject.toml ] && [ ! -f requirements.txt ]; then
+
+                                            echo "Dependency source: pyproject.toml (uv)"
+
+                                            # uv lives in the Jenkins home and survives builds;
+                                            # installed on first use, no sudo needed
+                                            UV_HOME="\$HOME/.jenkins-uv"
+                                            if [ ! -x "\$UV_HOME/bin/uv" ]; then
+                                                python3 -m venv "\$UV_HOME"
+                                                "\$UV_HOME/bin/pip" install --quiet uv
+                                            fi
+                                            export PATH="\$UV_HOME/bin:\$PATH"
+                                            uv --version
+
+                                            # Project's pinned version if any, else 3.12 (same as Dockerfiles)
+                                            PY_VER=3.12
+                                            if [ -f .python-version ]; then
+                                                PY_VER=\$(head -1 .python-version)
+                                            fi
+
+                                            export UV_PROJECT_ENVIRONMENT=.jenkins-pr-venv
+
+                                            if [ -f uv.lock ]; then
+                                                uv sync --frozen --all-extras --python "\$PY_VER"
+                                            else
+                                                uv sync --all-extras --python "\$PY_VER"
+                                            fi
+
+                                            . .jenkins-pr-venv/bin/activate
+
+                                            # Jenkins-required testing tools
+                                            uv pip install --quiet pytest pytest-asyncio coverage
+
+                                        else
+
+                                            echo "Dependency source: requirements*.txt (pip)"
+
+                                            python3 -m venv .jenkins-pr-venv
+
+                                            . .jenkins-pr-venv/bin/activate
+
+                                            python -m pip install --upgrade pip
+
+                                            # Application dependencies
+                                            if [ -f requirements.txt ]; then
+                                                python -m pip install \
+                                                  -r requirements.txt
+                                            fi
+
+                                            # Project test dependencies
+                                            if [ -f requirements-test.txt ]; then
+                                                python -m pip install \
+                                                  -r requirements-test.txt
+                                            elif [ -f requirements-dev.txt ]; then
+                                                python -m pip install \
+                                                  -r requirements-dev.txt
+                                            fi
+
+                                            # Jenkins-required testing tools
+                                            python -m pip install pytest pytest-asyncio coverage
+                                        fi
+
+                                        trap - ERR
 
                                         python --version
-
-                                        python -m pip install --upgrade pip
-
-                                        # Application dependencies
-                                        if [ -f requirements.txt ]; then
-                                            python -m pip install \
-                                              -r requirements.txt
-                                        fi
-
-                                        # Project test dependencies
-                                        if [ -f requirements-test.txt ]; then
-                                            python -m pip install \
-                                              -r requirements-test.txt
-                                        elif [ -f requirements-dev.txt ]; then
-                                            python -m pip install \
-                                              -r requirements-dev.txt
-                                        fi
-
-                                        # Jenkins-required testing tools
-                                        python -m pip install pytest coverage
 
                                         coverage erase
 
